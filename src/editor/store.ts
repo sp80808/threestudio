@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Behaviour, Project, Entity, createDefaultProject } from '../simulation/schema';
 import { saveProject, loadProject } from '../persistence/db';
+import { createPressurePlateDoorRecipe } from './recipes';
 
 type Command = {
   forward: (state: Project) => Project;
@@ -34,6 +35,7 @@ interface EditorState {
   addBehaviour: (entityId: string, behaviour: Behaviour) => void;
   updateBehaviour: (entityId: string, behaviourId: string, patch: Partial<Behaviour>) => void;
   removeBehaviour: (entityId: string, behaviourId: string) => void;
+  addPressurePlateDoorRecipe: () => void;
 }
 
 function setEntity(project: Project, id: string, entity: Entity): Project {
@@ -44,6 +46,10 @@ function setEntity(project: Project, id: string, entity: Entity): Project {
       [id]: entity,
     },
   };
+}
+
+function keepValidSelection(project: Project, selectedEntityId: string | null): string | null {
+  return selectedEntityId && project.entities[selectedEntityId] ? selectedEntityId : null;
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -60,13 +66,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   executeCommand: (command) => {
     set((state) => {
-      const newProject = command.forward(state.project);
-      const newHistory = state.history.slice(0, state.historyIndex + 1);
-      newHistory.push(command);
+      const project = command.forward(state.project);
+      const history = state.history.slice(0, state.historyIndex + 1);
+      history.push(command);
       return {
-        project: newProject,
-        history: newHistory,
-        historyIndex: newHistory.length - 1,
+        project,
+        history,
+        historyIndex: history.length - 1,
+        selectedEntityId: keepValidSelection(project, state.selectedEntityId),
       };
     });
   },
@@ -74,10 +81,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   undo: () => {
     set((state) => {
       if (state.historyIndex < 0) return state;
-      const command = state.history[state.historyIndex];
+      const project = state.history[state.historyIndex].reverse(state.project);
       return {
-        project: command.reverse(state.project),
+        project,
         historyIndex: state.historyIndex - 1,
+        selectedEntityId: keepValidSelection(project, state.selectedEntityId),
       };
     });
   },
@@ -85,10 +93,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   redo: () => {
     set((state) => {
       if (state.historyIndex >= state.history.length - 1) return state;
-      const command = state.history[state.historyIndex + 1];
+      const project = state.history[state.historyIndex + 1].forward(state.project);
       return {
-        project: command.forward(state.project),
+        project,
         historyIndex: state.historyIndex + 1,
+        selectedEntityId: keepValidSelection(project, state.selectedEntityId),
       };
     });
   },
@@ -198,5 +207,27 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       forward: (project) => setEntity(project, entityId, { ...project.entities[entityId], behaviours: next }),
       reverse: (project) => setEntity(project, entityId, { ...project.entities[entityId], behaviours: previous }),
     });
+  },
+
+  addPressurePlateDoorRecipe: () => {
+    const recipe = createPressurePlateDoorRecipe();
+    const entityIds = recipe.entities.map((entity) => entity.id);
+
+    get().executeCommand({
+      forward: (project) => ({
+        ...project,
+        entities: {
+          ...project.entities,
+          ...Object.fromEntries(recipe.entities.map((entity) => [entity.id, entity])),
+        },
+      }),
+      reverse: (project) => {
+        const entities = { ...project.entities };
+        for (const id of entityIds) delete entities[id];
+        return { ...project, entities };
+      },
+    });
+
+    get().selectEntity(recipe.selectedEntityId);
   },
 }));
