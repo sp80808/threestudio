@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Project, Entity, createDefaultProject } from '../simulation/schema';
+import { Behaviour, Project, Entity, createDefaultProject } from '../simulation/schema';
 import { saveProject, loadProject } from '../persistence/db';
 
 type Command = {
@@ -15,11 +15,10 @@ interface EditorState {
   history: Command[];
   historyIndex: number;
 
-  // Actions
   selectEntity: (id: string | null) => void;
   setTransformMode: (mode: 'translate' | 'rotate' | 'scale') => void;
   setTransformSpace: (space: 'local' | 'world') => void;
-  
+
   executeCommand: (command: Command) => void;
   undo: () => void;
   redo: () => void;
@@ -28,11 +27,23 @@ interface EditorState {
   load: (id: string) => Promise<void>;
   newProject: () => void;
 
-  // Helpers that wrap executeCommand
   addEntity: (entity: Entity) => void;
   removeEntity: (id: string) => void;
   updateEntityTransform: (id: string, transform: Entity['transform']) => void;
   updateEntityName: (id: string, name: string) => void;
+  addBehaviour: (entityId: string, behaviour: Behaviour) => void;
+  updateBehaviour: (entityId: string, behaviourId: string, patch: Partial<Behaviour>) => void;
+  removeBehaviour: (entityId: string, behaviourId: string) => void;
+}
+
+function setEntity(project: Project, id: string, entity: Entity): Project {
+  return {
+    ...project,
+    entities: {
+      ...project.entities,
+      [id]: entity,
+    },
+  };
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
@@ -64,9 +75,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((state) => {
       if (state.historyIndex < 0) return state;
       const command = state.history[state.historyIndex];
-      const newProject = command.reverse(state.project);
       return {
-        project: newProject,
+        project: command.reverse(state.project),
         historyIndex: state.historyIndex - 1,
       };
     });
@@ -76,9 +86,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((state) => {
       if (state.historyIndex >= state.history.length - 1) return state;
       const command = state.history[state.historyIndex + 1];
-      const newProject = command.forward(state.project);
       return {
-        project: newProject,
+        project: command.forward(state.project),
         historyIndex: state.historyIndex + 1,
       };
     });
@@ -96,19 +105,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       set({ project, history: [], historyIndex: -1, selectedEntityId: null });
     }
   },
-  
+
   newProject: () => {
     set({ project: createDefaultProject(), history: [], historyIndex: -1, selectedEntityId: null });
   },
 
   addEntity: (entity) => {
     get().executeCommand({
-      forward: (p) => ({ ...p, entities: { ...p.entities, [entity.id]: entity } }),
-      reverse: (p) => {
-        const newEntities = { ...p.entities };
-        delete newEntities[entity.id];
-        return { ...p, entities: newEntities };
-      }
+      forward: (project) => setEntity(project, entity.id, entity),
+      reverse: (project) => {
+        const entities = { ...project.entities };
+        delete entities[entity.id];
+        return { ...project, entities };
+      },
     });
     get().selectEntity(entity.id);
   },
@@ -116,52 +125,78 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   removeEntity: (id) => {
     const entity = get().project.entities[id];
     if (!entity) return;
+
     get().executeCommand({
-      forward: (p) => {
-        const newEntities = { ...p.entities };
-        delete newEntities[id];
-        return { ...p, entities: newEntities };
+      forward: (project) => {
+        const entities = { ...project.entities };
+        delete entities[id];
+        return { ...project, entities };
       },
-      reverse: (p) => ({ ...p, entities: { ...p.entities, [id]: entity } })
+      reverse: (project) => setEntity(project, id, entity),
     });
+
     if (get().selectedEntityId === id) get().selectEntity(null);
   },
 
   updateEntityTransform: (id, transform) => {
     const entity = get().project.entities[id];
     if (!entity) return;
-    const oldTransform = entity.transform;
+    const previousTransform = entity.transform;
+
     get().executeCommand({
-      forward: (p) => ({
-        ...p,
-        entities: {
-          ...p.entities,
-          [id]: { ...p.entities[id], transform }
-        }
-      }),
-      reverse: (p) => ({
-        ...p,
-        entities: {
-          ...p.entities,
-          [id]: { ...p.entities[id], transform: oldTransform }
-        }
-      })
+      forward: (project) => setEntity(project, id, { ...project.entities[id], transform }),
+      reverse: (project) => setEntity(project, id, { ...project.entities[id], transform: previousTransform }),
     });
   },
 
   updateEntityName: (id, name) => {
-      const entity = get().project.entities[id];
-      if (!entity) return;
-      const oldName = entity.name;
-      get().executeCommand({
-          forward: (p) => ({
-              ...p,
-              entities: { ...p.entities, [id]: { ...p.entities[id], name } }
-          }),
-          reverse: (p) => ({
-              ...p,
-              entities: { ...p.entities, [id]: { ...p.entities[id], name: oldName } }
-          })
-      });
-  }
+    const entity = get().project.entities[id];
+    if (!entity) return;
+    const previousName = entity.name;
+
+    get().executeCommand({
+      forward: (project) => setEntity(project, id, { ...project.entities[id], name }),
+      reverse: (project) => setEntity(project, id, { ...project.entities[id], name: previousName }),
+    });
+  },
+
+  addBehaviour: (entityId, behaviour) => {
+    const entity = get().project.entities[entityId];
+    if (!entity) return;
+    const previous = entity.behaviours ?? [];
+    const next = [...previous, behaviour];
+
+    get().executeCommand({
+      forward: (project) => setEntity(project, entityId, { ...project.entities[entityId], behaviours: next }),
+      reverse: (project) => setEntity(project, entityId, { ...project.entities[entityId], behaviours: previous }),
+    });
+  },
+
+  updateBehaviour: (entityId, behaviourId, patch) => {
+    const entity = get().project.entities[entityId];
+    const previousList = entity?.behaviours ?? [];
+    const previousBehaviour = previousList.find((behaviour) => behaviour.id === behaviourId);
+    if (!entity || !previousBehaviour) return;
+
+    const nextList = previousList.map((behaviour) =>
+      behaviour.id === behaviourId ? { ...behaviour, ...patch } : behaviour,
+    );
+
+    get().executeCommand({
+      forward: (project) => setEntity(project, entityId, { ...project.entities[entityId], behaviours: nextList }),
+      reverse: (project) => setEntity(project, entityId, { ...project.entities[entityId], behaviours: previousList }),
+    });
+  },
+
+  removeBehaviour: (entityId, behaviourId) => {
+    const entity = get().project.entities[entityId];
+    if (!entity) return;
+    const previous = entity.behaviours ?? [];
+    const next = previous.filter((behaviour) => behaviour.id !== behaviourId);
+
+    get().executeCommand({
+      forward: (project) => setEntity(project, entityId, { ...project.entities[entityId], behaviours: next }),
+      reverse: (project) => setEntity(project, entityId, { ...project.entities[entityId], behaviours: previous }),
+    });
+  },
 }));
