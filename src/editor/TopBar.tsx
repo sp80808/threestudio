@@ -14,6 +14,7 @@ import {
   RotateCcw,
   Save,
   Scaling,
+  Sparkles,
   Square,
   StopCircle,
   Trash,
@@ -30,6 +31,7 @@ export default function TopBar() {
     save,
     load,
     addEntity,
+    addPressurePlateDoorRecipe,
     transformMode,
     setTransformMode,
     transformSpace,
@@ -94,6 +96,15 @@ export default function TopBar() {
       </div>
 
       <div className="flex items-center gap-2">
+        <button
+          onClick={addPressurePlateDoorRecipe}
+          disabled={isPlaying}
+          className={`flex items-center gap-1.5 rounded border px-3 py-1.5 text-xs font-semibold ${isPlaying ? 'cursor-not-allowed border-zinc-800 text-zinc-700' : 'border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20'}`}
+          title="Create a connected pressure plate, sliding door, ground and test crate as one undoable recipe"
+        >
+          <Sparkles size={14} /> Plate + Door
+        </button>
+
         <div className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 p-1">
           <button
             onClick={() => window.dispatchEvent(new CustomEvent('start-play-mode'))}

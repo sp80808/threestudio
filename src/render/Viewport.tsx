@@ -9,6 +9,7 @@ import {
   createRuntimeBehaviourState,
   RuntimeBehaviourState,
 } from '../runtime/behaviours';
+import { PhysicsRuntime, RuntimeTraceEntry } from '../runtime/physics';
 
 function disposeObject(object: THREE.Object3D): void {
   object.traverse((child) => {
@@ -80,8 +81,14 @@ export default function Viewport() {
     const objectMap = new Map<string, THREE.Object3D>();
     const runtimeStateMap = new Map<string, RuntimeBehaviourState>();
     const clock = new THREE.Clock();
+    let physicsRuntime: PhysicsRuntime | null = null;
     let isPlaying = false;
     let isInitialSyncDone = false;
+    let playSessionId = 0;
+
+    const publishTrace = (entry: RuntimeTraceEntry) => {
+      window.dispatchEvent(new CustomEvent('runtime-trace', { detail: entry }));
+    };
 
     const restoreEditTransforms = () => {
       const project = useEditorStore.getState().project;
@@ -91,12 +98,36 @@ export default function Viewport() {
       }
     };
 
-    const announcePlayState = () => {
-      window.dispatchEvent(new CustomEvent('play-mode-state', { detail: { playing: isPlaying } }));
+    const announcePlayState = (status: 'edit' | 'initializing' | 'playing' | 'error' = isPlaying ? 'playing' : 'edit') => {
+      window.dispatchEvent(new CustomEvent('play-mode-state', {
+        detail: { playing: isPlaying, status },
+      }));
     };
 
-    const startPlayMode = () => {
+    const restoreEditorControls = () => {
+      transformControl.enabled = true;
+      const selectedId = useEditorStore.getState().selectedEntityId;
+      const selectedObject = selectedId ? objectMap.get(selectedId) : undefined;
+      if (selectedObject) transformControl.attach(selectedObject);
+    };
+
+    const stopPlayMode = () => {
+      if (!isPlaying && !physicsRuntime) return;
+      playSessionId += 1;
+      isPlaying = false;
+      clock.stop();
+      physicsRuntime?.dispose();
+      physicsRuntime = null;
+      runtimeStateMap.clear();
+      restoreEditTransforms();
+      restoreEditorControls();
+      announcePlayState('edit');
+    };
+
+    const startPlayMode = async () => {
       if (isPlaying) return;
+      const sessionId = ++playSessionId;
+      isPlaying = true;
       restoreEditTransforms();
       runtimeStateMap.clear();
       for (const [id, object] of objectMap.entries()) {
@@ -104,23 +135,31 @@ export default function Viewport() {
       }
       transformControl.detach();
       transformControl.enabled = false;
-      isPlaying = true;
       clock.start();
-      announcePlayState();
-    };
+      announcePlayState('initializing');
+      publishTrace({ kind: 'info', message: 'Initialising isolated Play runtime…' });
 
-    const stopPlayMode = () => {
-      if (!isPlaying) return;
-      isPlaying = false;
-      clock.stop();
-      runtimeStateMap.clear();
-      restoreEditTransforms();
-      transformControl.enabled = true;
-
-      const selectedId = useEditorStore.getState().selectedEntityId;
-      const selectedObject = selectedId ? objectMap.get(selectedId) : undefined;
-      if (selectedObject) transformControl.attach(selectedObject);
-      announcePlayState();
+      try {
+        const projectSnapshot = structuredClone(useEditorStore.getState().project);
+        const runtime = await PhysicsRuntime.create(projectSnapshot, objectMap, publishTrace);
+        if (!isPlaying || sessionId !== playSessionId) {
+          runtime.dispose();
+          return;
+        }
+        physicsRuntime = runtime;
+        announcePlayState('playing');
+        publishTrace({ kind: 'info', message: 'Play mode started.' });
+      } catch (error) {
+        if (sessionId !== playSessionId) return;
+        const message = error instanceof Error ? error.message : String(error);
+        publishTrace({ kind: 'warning', message: `Play mode failed: ${message}` });
+        isPlaying = false;
+        clock.stop();
+        runtimeStateMap.clear();
+        restoreEditTransforms();
+        restoreEditorControls();
+        announcePlayState('error');
+      }
     };
 
     transformControl.addEventListener('dragging-changed', (event) => {
@@ -157,8 +196,8 @@ export default function Viewport() {
           object = new THREE.Group();
           object.name = entity.name;
 
-          if (entity.components.render) {
-            const renderComponent = entity.components.render;
+          const renderComponent = entity.components.render;
+          if (renderComponent?.type === 'render') {
             let geometry: THREE.BufferGeometry;
 
             switch (renderComponent.geometry) {
@@ -217,10 +256,16 @@ export default function Viewport() {
         for (const [id, object] of objectMap.entries()) {
           const entity = project.entities[id];
           const runtimeState = runtimeStateMap.get(id);
-          if (entity && runtimeState) {
+          const physicsComponent = entity?.components.physics;
+          if (
+            entity &&
+            runtimeState &&
+            (!physicsComponent || physicsComponent.type !== 'physics')
+          ) {
             applyRuntimeBehaviours(entity, object, runtimeState, deltaSeconds);
           }
         }
+        physicsRuntime?.step(deltaSeconds);
       }
 
       orbit.update();
@@ -336,20 +381,24 @@ export default function Viewport() {
       orbit.update();
     };
 
+    const handleStartPlayMode = () => {
+      void startPlayMode();
+    };
+
     container.addEventListener('pointerdown', onPointerDown);
     container.addEventListener('pointerup', onPointerUp);
     window.addEventListener('export-glb', handleExport);
     window.addEventListener('zoom-in', handleZoomIn);
     window.addEventListener('zoom-out', handleZoomOut);
     window.addEventListener('focus-selected', handleFocus);
-    window.addEventListener('start-play-mode', startPlayMode);
+    window.addEventListener('start-play-mode', handleStartPlayMode);
     window.addEventListener('stop-play-mode', stopPlayMode);
 
     useEditorStore.setState((state) => ({ ...state }));
-    announcePlayState();
+    announcePlayState('edit');
 
     return () => {
-      if (isPlaying) stopPlayMode();
+      stopPlayMode();
       unsubscribe();
       cancelAnimationFrame(animationFrameId);
       resizeObserver.disconnect();
@@ -359,7 +408,7 @@ export default function Viewport() {
       window.removeEventListener('zoom-in', handleZoomIn);
       window.removeEventListener('zoom-out', handleZoomOut);
       window.removeEventListener('focus-selected', handleFocus);
-      window.removeEventListener('start-play-mode', startPlayMode);
+      window.removeEventListener('start-play-mode', handleStartPlayMode);
       window.removeEventListener('stop-play-mode', stopPlayMode);
 
       for (const object of objectMap.values()) disposeObject(object);

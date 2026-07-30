@@ -12,8 +12,16 @@ export const RenderComponentSchema = z.object({
   color: z.string(),
 });
 
+export const PhysicsComponentSchema = z.object({
+  type: z.literal('physics'),
+  bodyType: z.enum(['fixed', 'dynamic', 'kinematic-position']),
+  collider: z.literal('box'),
+  sensor: z.boolean(),
+});
+
 export const ComponentSchema = z.discriminatedUnion('type', [
   RenderComponentSchema,
+  PhysicsComponentSchema,
 ]);
 
 export const BehaviourValueSchema = z.union([
@@ -41,7 +49,14 @@ export const RuleConditionSchema = z.object({
 
 export const RuleActionSchema = z.object({
   id: z.string(),
-  type: z.enum(['set-enabled', 'set-visible', 'set-variable', 'emit-event']),
+  type: z.enum([
+    'set-enabled',
+    'set-visible',
+    'set-variable',
+    'emit-event',
+    'open-door',
+    'close-door',
+  ]),
   targetEntityId: z.string().nullable(),
   property: z.string().nullable(),
   value: BehaviourValueSchema,
@@ -78,6 +93,7 @@ export const ProjectSchema = z.object({
 
 export type Transform = z.infer<typeof TransformSchema>;
 export type RenderComponent = z.infer<typeof RenderComponentSchema>;
+export type PhysicsComponent = z.infer<typeof PhysicsComponentSchema>;
 export type EntityComponent = z.infer<typeof ComponentSchema>;
 export type BehaviourValue = z.infer<typeof BehaviourValueSchema>;
 export type Behaviour = z.infer<typeof BehaviourSchema>;
@@ -88,7 +104,7 @@ export type Project = z.infer<typeof ProjectSchema>;
 export function createDefaultProject(): Project {
   return {
     id: 'default',
-    version: 1,
+    version: 2,
     name: 'New Project',
     entities: {},
   };
