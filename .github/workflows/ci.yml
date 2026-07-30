@@ -6,6 +6,7 @@ on:
       - prototype/lovable-editor
       - prototype/replit-runtime
       - integration/no-code-vertical-slice
+      - feature/pressure-plate-door
   pull_request:
     branches:
       - main
@@ -29,3 +30,20 @@ jobs:
         run: npm test
       - name: Production build
         run: npm run build
+
+  browser-smoke:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.0-noble
+      options: --user 1001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Run Chromium gameplay smoke test
+        run: npm run test:e2e
