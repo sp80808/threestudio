@@ -5,6 +5,7 @@ on:
     branches:
       - prototype/lovable-editor
       - prototype/replit-runtime
+      - integration/no-code-vertical-slice
   pull_request:
     branches:
       - main
@@ -24,5 +25,7 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Type-check
         run: npm run lint
+      - name: Unit tests
+        run: npm test
       - name: Production build
         run: npm run build
