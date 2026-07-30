@@ -23,6 +23,25 @@ function disposeObject(object: THREE.Object3D): void {
   });
 }
 
+function applyEntityTransform(object: THREE.Object3D, entity: ReturnType<typeof useEditorStore.getState>['project']['entities'][string]): void {
+  object.position.set(
+    entity.transform.position[0],
+    entity.transform.position[1],
+    entity.transform.position[2],
+  );
+  object.rotation.set(
+    entity.transform.rotation[0],
+    entity.transform.rotation[1],
+    entity.transform.rotation[2],
+    'XYZ',
+  );
+  object.scale.set(
+    entity.transform.scale[0],
+    entity.transform.scale[1],
+    entity.transform.scale[2],
+  );
+}
+
 export default function Viewport() {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -68,15 +87,7 @@ export default function Viewport() {
       const project = useEditorStore.getState().project;
       for (const [id, object] of objectMap.entries()) {
         const entity = project.entities[id];
-        if (!entity) continue;
-        object.position.fromArray(entity.transform.position);
-        object.rotation.fromArray([...entity.transform.rotation, entity.transform.rotation[2], 'XYZ'] as never);
-        object.rotation.set(
-          entity.transform.rotation[0],
-          entity.transform.rotation[1],
-          entity.transform.rotation[2],
-        );
-        object.scale.fromArray(entity.transform.scale);
+        if (entity) applyEntityTransform(object, entity);
       }
     };
 
@@ -174,15 +185,7 @@ export default function Viewport() {
         }
 
         object.name = entity.name;
-        if (!isPlaying && orbit.enabled) {
-          object.position.fromArray(entity.transform.position);
-          object.rotation.set(
-            entity.transform.rotation[0],
-            entity.transform.rotation[1],
-            entity.transform.rotation[2],
-          );
-          object.scale.fromArray(entity.transform.scale);
-        }
+        if (!isPlaying && orbit.enabled) applyEntityTransform(object, entity);
       }
 
       if (!isPlaying && state.selectedEntityId !== previousState.selectedEntityId) {
