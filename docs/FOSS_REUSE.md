@@ -28,6 +28,21 @@ This register is required for every external project whose code, package, archit
 | Files in ThreeStudio | `src/runtime/physics.ts`, `src/simulation/schema.ts`, `src/editor/recipes.ts` |
 | Copied upstream source | None |
 
+## `@playwright/test`
+
+| Field | Decision |
+| --- | --- |
+| State | Development/test dependency |
+| Upstream | `microsoft/playwright` |
+| Package | `@playwright/test` |
+| Version | Exact `1.62.0`, matched to the CI container image |
+| Licence | Apache-2.0 |
+| Why selected | Runs the complete recipe in Chromium and verifies the actual browser/WASM interaction rather than relying only on unit tests |
+| Runtime boundary | Development and CI only; excluded from the shipped editor bundle |
+| CI boundary | One Chromium worker, one bounded smoke scenario, software WebGL enabled for the headless runner |
+| Files in ThreeStudio | `playwright.config.ts`, `e2e/pressure-plate-door.spec.ts`, `.github/workflows/ci.yml` |
+| Copied upstream source | None |
+
 ## `three`
 
 | Field | Decision |
