@@ -18,6 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProject, createEntity, createVariable, type Project } from '../simulation/schema';
 import { createPlaygroundScene, createPressurePlateDoorScene } from '../simulation/scenarios';
 import { createBehaviourInstance } from '../runtime/behaviours';
+import PlayHud from '../render/PlayHud';
+import { PLAY_EVENTS, usePlayStore } from './playStore';
 import Hierarchy from './Hierarchy';
 import Inspector from './Inspector';
 import StatusBar from './StatusBar';
@@ -93,6 +95,7 @@ function setInputValue(input: HTMLInputElement | undefined, value: string) {
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   loadProject(createPressurePlateDoorScene());
+  usePlayStore.setState({ status: 'stopped', stats: null, variables: [], diagnostics: [], recording: false, recordedFrames: 0 });
 });
 
 afterEach(() => {
@@ -187,6 +190,42 @@ describe('editor panels', () => {
     // The registry-driven panel shows the unknown behaviour but offers no fields.
     expect(text()).toContain('quantum-teleport');
     expect(text()).toContain('Spin');
+  });
+
+  it('offers record and download controls in play mode', () => {
+    const dispatched: string[] = [];
+    const listener = (event: Event) => dispatched.push(event.type);
+    window.addEventListener(PLAY_EVENTS.record, listener);
+    window.addEventListener(PLAY_EVENTS.stopRecording, listener);
+    window.addEventListener(PLAY_EVENTS.downloadRecording, listener);
+
+    usePlayStore.setState({ status: 'playing', stats: null, variables: [], diagnostics: [] });
+    mount(<PlayHud />);
+
+    const findButton = (label: string) =>
+      [...container.querySelectorAll('button')].find((button) => button.textContent?.includes(label));
+
+    click(findButton('Record') ?? null);
+    expect(dispatched).toEqual([PLAY_EVENTS.record]);
+    expect(text()).not.toContain('120');
+
+    // While recording, the button shows the captured frame count and stops it.
+    act(() => {
+      usePlayStore.setState({ recording: true, recordedFrames: 42 });
+    });
+    click(findButton('42') ?? null);
+    expect(dispatched).toEqual([PLAY_EVENTS.record, PLAY_EVENTS.stopRecording]);
+
+    // Once a recording exists, it can be downloaded.
+    act(() => {
+      usePlayStore.setState({ recording: false, recordedFrames: 120 });
+    });
+    click(findButton('120') ?? null);
+    window.removeEventListener(PLAY_EVENTS.record, listener);
+    window.removeEventListener(PLAY_EVENTS.stopRecording, listener);
+    window.removeEventListener(PLAY_EVENTS.downloadRecording, listener);
+
+    expect(dispatched).toEqual([PLAY_EVENTS.record, PLAY_EVENTS.stopRecording, PLAY_EVENTS.downloadRecording]);
   });
 
   it('asks the viewport to export a GLB and reports the result', () => {

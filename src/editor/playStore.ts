@@ -21,6 +21,10 @@ export interface PlaySnapshot {
   stats: WorldStats | null;
   variables: { id: string; name: string; value: BehaviourValue }[];
   diagnostics: Diagnostic[];
+  /** True while the current session is capturing input. */
+  recording: boolean;
+  /** Frames available to download: the running capture, or the last one. */
+  recordedFrames: number;
 }
 
 interface PlayStore extends PlaySnapshot {
@@ -29,6 +33,11 @@ interface PlayStore extends PlaySnapshot {
   requestPause: () => void;
   requestStep: () => void;
   requestStop: () => void;
+  /** Starts recording the session's input (the runtime keeps playing). */
+  requestRecord: () => void;
+  requestStopRecording: () => void;
+  /** Downloads the last recording as a JSON file. */
+  requestDownloadRecording: () => void;
 }
 
 export const PLAY_EVENTS = {
@@ -36,6 +45,9 @@ export const PLAY_EVENTS = {
   pause: 'pause-play-mode',
   step: 'step-play-mode',
   stop: 'stop-play-mode',
+  record: 'record-play-mode',
+  stopRecording: 'stop-recording',
+  downloadRecording: 'download-recording',
 } as const;
 
 export const usePlayStore = create<PlayStore>((set) => ({
@@ -43,6 +55,8 @@ export const usePlayStore = create<PlayStore>((set) => ({
   stats: null,
   variables: [],
   diagnostics: [],
+  recording: false,
+  recordedFrames: 0,
 
   setSnapshot: (snapshot) => set(snapshot),
 
@@ -51,4 +65,7 @@ export const usePlayStore = create<PlayStore>((set) => ({
   requestPause: () => window.dispatchEvent(new CustomEvent(PLAY_EVENTS.pause)),
   requestStep: () => window.dispatchEvent(new CustomEvent(PLAY_EVENTS.step)),
   requestStop: () => window.dispatchEvent(new CustomEvent(PLAY_EVENTS.stop)),
+  requestRecord: () => window.dispatchEvent(new CustomEvent(PLAY_EVENTS.record)),
+  requestStopRecording: () => window.dispatchEvent(new CustomEvent(PLAY_EVENTS.stopRecording)),
+  requestDownloadRecording: () => window.dispatchEvent(new CustomEvent(PLAY_EVENTS.downloadRecording)),
 }));

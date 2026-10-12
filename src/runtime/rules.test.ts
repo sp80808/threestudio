@@ -59,6 +59,7 @@ function createFakeWorld(initEntities: RuntimeEntityInit[] = []): FakeWorld {
       getMovementAxis: () => ({ x: 0, y: 0 }),
       isKeyDown: () => false,
       getPressedKeys: () => [],
+      getHeldKeys: () => [],
       takePointerPicks: () => [],
       endStep: () => {},
     },

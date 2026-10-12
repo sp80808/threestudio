@@ -90,6 +90,8 @@ export interface GameInput {
   isKeyDown(code: string): boolean;
   /** Keys that went down since the previous fixed step. */
   getPressedKeys(): string[];
+  /** Every key currently held, so a session can be recorded faithfully. */
+  getHeldKeys(): string[];
   /** Pointer picks recorded since the previous fixed step. */
   takePointerPicks(): PointerPick[];
   /** Called by the world at the end of every fixed step. */

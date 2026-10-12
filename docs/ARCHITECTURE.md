@@ -8,10 +8,11 @@
 - **runtime/**: the game itself. Pure TypeScript, no React and no Three.js:
   `world.ts` (fixed-step loop and lifecycle), `behaviours.ts` (registry), `rules.ts`
   (WHEN/IF/DO), `collision.ts` (kinematic volumes), `variables.ts`, `input.ts`,
-  `diagnostics.ts`, plus `math.ts` / `values.ts` helpers.
+  `diagnostics.ts`, `replay.ts` (input recording/replay), plus `math.ts` / `values.ts` helpers.
 - **render/**: Three.js viewport, document→scene synchronisation, collider visualisation,
   play-mode HUD, glTF export.
-- **persistence/**: IndexedDB via Dexie, JSON import/export, document migration.
+- **persistence/**: IndexedDB via Dexie, JSON import/export, document migration, recording
+  import/export (`recording.ts`).
 
 ## State Management
 
@@ -77,8 +78,11 @@ Guarantees:
 - The acceptance scenario is a play-through test (`src/runtime/scenario.test.ts`): scripted
   input drives the tutorial scene, asserting that the plate opens the door, gems count up and
   the portal appears, with no diagnostics raised.
-- `src/runtime/testHarness.ts` provides `createHarness()` (started session + scripted input)
-  and `makeRuntimeEntity()` for focused tests.
+- `src/runtime/testHarness.ts` provides `createHarness()` (started session + scripted input),
+  `createRecordingHarness()` / `createReplayHarness()` (record & replay), a `StepSource`
+  interface both satisfy, and `makeRuntimeEntity()` for focused tests.
+- Recorded sessions are replayed against a `StepSource`, so anything that can run a world can
+  run a recording — the playtest runner and the unit tests use the same path.
 - `src/editor/app.test.tsx` mounts the real editor panels in jsdom to check that any document
   the editor can be handed (empty, unknown behaviour types, freshly imported) renders and that
   edits made through the UI reach the store.

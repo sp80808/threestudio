@@ -30,6 +30,16 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 - `variables.ts`, `values.ts`, `math.ts`, `state.ts`, `diagnostics.ts`, `input.ts`
   (DOM + scripted input), `types.ts` (runtime contracts), `testHarness.ts`.
 
+**Record & replay (`src/runtime/replay.ts`, `src/persistence/recording.ts`)**
+- Every play session can be recorded: `createRecordingInput` wraps the live DOM input and
+  captures one frame per fixed step (movement axis, pressed/held keys, pointer picks).
+  Replays go through `createReplayInput` / `createReplayHarness`, so a recorded session
+  reproduces itself frame for frame (same document, seed and step rate).
+- The play HUD has Record / stop / download controls; recordings are validated on import
+  (`parseRecording`, with a migration path for older frames).
+- `npm run playtest -- --replay session.json` plays a recording headlessly and reports it;
+  `--save-recording out.json` captures the scripted pilot's input for the same purpose.
+
 **Rendering and play mode (`src/render/`)**
 - `Viewport.tsx`: edit mode mirrors the document; play mode hands the scene to a `World`
   created from a **copy** of the document, so stopping always restores the authored scene.
@@ -49,9 +59,9 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 - `persistence/db.ts`: IndexedDB (Dexie v2 schema with an upgrade path), save/load/list.
 - `persistence/io.ts`: JSON export/import, v1→v2 migration, validation, normalisation.
 - TypeScript `strict` enabled; `@types/react`/`@types/react-dom` added.
-- 90 tests (`npm test`): runtime unit suites, a full play-through of the acceptance scenario,
-  jsdom mounts of the editor panels (`src/editor/app.test.tsx`) and the runner itself
-  (`src/runtime/playtest.test.ts`).
+- 103 tests (`npm test`): runtime unit suites (including record/replay determinism), a full
+  play-through of the acceptance scenario, jsdom mounts of the editor panels
+  (`src/editor/app.test.tsx`) and of the runner itself (`src/runtime/playtest.test.ts`).
 - `tools/playtest.ts` (`npm run playtest`): headless playtest runner with a scripted pilot, a
   timeline of world changes and a pass/fail report (18 checks on the acceptance scene). It also
   plays any exported document with `--document <file.json>`.
@@ -60,7 +70,6 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 ### Next Steps
 - Rapier-backed physics behind the existing `resolveMovement` / `WorldAccess` contract.
 - Hierarchy/parenting in both the renderer and the runtime transform cascade.
-- Asset import pipeline (glTF/GLB in) and material editing beyond a single colour.
-- Recording/replay of input on top of `tools/playtest.ts` for balance regression runs.
-- GLB export UI (the exporter exists in `render/` but no button dispatches it yet).
+- Balance regression runs: record a session per level and diff `npm run playtest` reports in CI.
+- Asset import pipeline (glTF/GLB in): the GLB export button is wired, the reverse is not.
 - Project browser UI on top of `listProjects()`, plus autosave.

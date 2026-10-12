@@ -94,6 +94,7 @@ function createIdleInput(): GameInput {
     getMovementAxis: () => ({ x: 0, y: 0 }),
     isKeyDown: () => false,
     getPressedKeys: () => [],
+    getHeldKeys: () => [],
     takePointerPicks: () => [],
     endStep: () => {},
   };

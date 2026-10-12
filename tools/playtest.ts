@@ -19,13 +19,24 @@
  * be wired into CI exactly like a test suite.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseProject } from '../src/persistence/io';
-import { createPlaygroundScene, createPressurePlateDoorScene } from '../src/simulation/scenarios';
+import { parseRecording, serializeRecording } from '../src/persistence/recording';
+import { createPlaygroundScene, createPressurePlateDoorScene, createSceneTemplate } from '../src/simulation/scenarios';
 import type { Project, Vec3 } from '../src/simulation/schema';
-import { createHarness, type Harness } from '../src/runtime/testHarness';
+import { createEmptyRecording, type Recording } from '../src/runtime/replay';
+import {
+  createHarness,
+  createRecordingHarness,
+  createReplayHarness,
+  type Harness,
+  type RecordingHarness,
+  type ReplayHarness,
+  type StepSource,
+} from '../src/runtime/testHarness';
+import type { ScriptedInput } from '../src/runtime/input';
 
 export interface Check {
   label: string;
@@ -38,7 +49,16 @@ interface Snapshot {
   entities: Record<string, { position: string; visible: boolean; collider: boolean; overlaps: string }>;
 }
 
-export interface Report {
+export interface ReplaySummary {
+  frames: number;
+  seed: number;
+  stepRate: number;
+  projectId: string;
+  /** True when the recording was made against this very document. */
+  matchedDocument: boolean;
+}
+
+interface Report {
   scenario: string;
   seed: number;
   steps: number;
@@ -48,6 +68,9 @@ export interface Report {
   checks: Check[];
   diagnostics: { level: string; message: string }[];
   variables: Record<string, string>;
+  replay?: ReplaySummary;
+  /** Captured input, present when the run was asked for a recording. */
+  recording?: Recording;
 }
 
 /** A scripted pilot: where to walk, what to click, and what should happen. */
@@ -56,7 +79,9 @@ export interface Playtest {
   title: string;
   description: string;
   create(): Project;
-  play(harness: Harness, recorder: Recorder): void;
+  play(source: StepSource, recorder: Recorder): void;
+  /** When set, the run replays these frames instead of using the pilot. */
+  replay?: Recording;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,14 +128,14 @@ class Recorder {
   private notes = 0;
 
   constructor(
-    readonly harness: Harness,
+    readonly source: StepSource,
     readonly fixedStep: number,
   ) {
     this.previous = this.snapshot();
   }
 
   private snapshot(): Snapshot {
-    const world = this.harness.world;
+    const world = this.source.world;
     const variables: Record<string, string> = {};
     for (const entry of world.getVariableEntries()) variables[entry.name] = String(entry.value);
 
@@ -138,7 +163,7 @@ class Recorder {
 
   /** Records one fixed step, diffing the world against the previous step. */
   tick(): void {
-    this.harness.step();
+    this.source.step();
     this.step += 1;
     this.time += this.fixedStep;
 
@@ -150,7 +175,7 @@ class Recorder {
     for (const [id, entity] of Object.entries(current.entities)) {
       const before = this.previous.entities[id];
       if (!before) continue;
-      const label = entityLabel(this.harness, id);
+      const label = entityLabel(this.source, id);
       if (before.position !== entity.position) {
         this.change(`position:${id}`, `${label} moved`, before.position, entity.position);
       }
@@ -253,8 +278,8 @@ class Recorder {
   }
 }
 
-function entityLabel(harness: Harness, id: string): string {
-  const name = harness.world.getEntity(id)?.name ?? id;
+function entityLabel(source: StepSource, id: string): string {
+  const name = source.world.getEntity(id)?.name ?? id;
   return `${name} (${id})`;
 }
 
@@ -270,9 +295,8 @@ interface Pilot {
   still(): void;
 }
 
-function createPilot(recorder: Recorder, playerId = 'player'): Pilot {
-  const harness = recorder.harness;
-  const world = harness.world;
+function createPilot(recorder: Recorder, input: ScriptedInput, playerId = 'player'): Pilot {
+  const world = recorder.source.world;
 
   const walkTo = (
     point: [number, number],
@@ -283,12 +307,13 @@ function createPilot(recorder: Recorder, playerId = 'player'): Pilot {
     let stalled = 0;
 
     for (let index = 0; index < steps; index += 1) {
-      const player = harness.entity(playerId);
+      const player = world.getEntity(playerId);
+      if (!player) throw new Error(`No entity "${playerId}" to walk`);
       const dx = point[0] - player.position[0];
       const dz = point[1] - player.position[2];
       const distance = Math.hypot(dx, dz);
       if (distance <= tolerance) {
-        harness.input.setAxis(0, 0);
+        input.setAxis(0, 0);
         return true;
       }
 
@@ -298,7 +323,7 @@ function createPilot(recorder: Recorder, playerId = 'player'): Pilot {
       const desired: Vec3 = [dx / distance, 0, dz / distance];
       const axisX = desired[0] * Math.cos(yaw) - desired[2] * Math.sin(yaw);
       const axisY = -desired[0] * Math.sin(yaw) - desired[2] * Math.cos(yaw);
-      harness.input.setAxis(
+      input.setAxis(
         axisX >= 0.05 ? 1 : axisX <= -0.05 ? -1 : 0,
         axisY >= 0.05 ? 1 : axisY <= -0.05 ? -1 : 0,
       );
@@ -308,7 +333,7 @@ function createPilot(recorder: Recorder, playerId = 'player'): Pilot {
       if (distance > best - 0.005) {
         stalled += 1;
         if (stalled > 120) {
-          harness.input.setAxis(0, 0);
+          input.setAxis(0, 0);
           recorder.note(`pilot gave up walking to (${point[0]}, ${point[1]}) — stuck ${distance.toFixed(2)}m away`);
           return false;
         }
@@ -318,7 +343,7 @@ function createPilot(recorder: Recorder, playerId = 'player'): Pilot {
       }
     }
 
-    harness.input.setAxis(0, 0);
+    input.setAxis(0, 0);
     recorder.note(`pilot ran out of time walking to (${point[0]}, ${point[1]})`);
     return false;
   };
@@ -326,10 +351,10 @@ function createPilot(recorder: Recorder, playerId = 'player'): Pilot {
   return {
     walkTo,
     click: (entityId) => {
-      harness.input.pick(entityId);
+      input.pick(entityId);
       recorder.tick();
     },
-    still: () => harness.input.setAxis(0, 0),
+    still: () => input.setAxis(0, 0),
   };
 }
 
@@ -351,8 +376,9 @@ const PRESSURE_PLATE_DOOR_PLAYTEST: Playtest = {
   title: 'Pressure Plate Door',
   description: 'The project acceptance scenario: press the plate, open the door, collect the gems.',
   create: createPressurePlateDoorScene,
-  play: (harness, recorder) => {
-    const pilot = createPilot(recorder);
+  play: (source, recorder) => {
+    const harness = source as Harness;
+    const pilot = createPilot(recorder, harness.input);
     const door = () => harness.entity('door-main');
 
     recorder.note('pilot walks towards the pressure plate');
@@ -443,8 +469,9 @@ const PLAYGROUND_PLAYTEST: Playtest = {
   title: 'Playground',
   description: 'Sandbox for clicks, chasing enemies, orbiting props and variables.',
   create: createPlaygroundScene,
-  play: (harness, recorder) => {
-    const pilot = createPilot(recorder);
+  play: (source, recorder) => {
+    const harness = source as Harness;
+    const pilot = createPilot(recorder, harness.input);
 
     recorder.note('pilot clicks the clickable object three times');
     for (let click = 0; click < 3; click += 1) pilot.click('clickable');
@@ -494,8 +521,9 @@ export function createDocumentPlaytest(project: Project, seconds = 15): Playtest
     title: project.name || 'Imported document',
     description: 'Runs an imported document with no expectations beyond a clean runtime.',
     create: () => project,
-    play: (harness, recorder) => {
-      const pilot = createPilot(recorder);
+    play: (source, recorder) => {
+      const harness = source as Harness;
+      const pilot = createPilot(recorder, harness.input);
       const landmarks = harness.world.getEntities().filter((entity) => entity.id !== 'player');
       const budget = Math.max(1, seconds) / Math.max(1, Math.min(landmarks.length, 6) + 1);
 
@@ -516,24 +544,77 @@ export function createDocumentPlaytest(project: Project, seconds = 15): Playtest
   };
 }
 
+/** Replays a recorded session against a document. */
+export function createReplayPlaytest(
+  project: Project,
+  recording: Recording,
+  name = 'recording',
+): Playtest {
+  return {
+    id: `replay:${name}`,
+    title: `Replay ${name}`,
+    description: `Replays ${recording.frames.length} recorded frames against ${project.name}.`,
+    replay: recording,
+    create: () => project,
+    play: (source, recorder) => {
+      const harness = source as ReplayHarness;
+      const stepRate = project.settings?.stepRate ?? recording.stepRate ?? 60;
+      const seconds = recording.frames.length / stepRate;
+
+      recorder.note(
+        `replaying ${recording.frames.length} frames (${seconds.toFixed(1)}s at ${stepRate} steps/s, seed ${recording.seed})`,
+      );
+      for (let index = 0; index < recording.frames.length; index += 1) recorder.tick();
+
+      recorder.check(
+        'every recorded frame was replayed',
+        harness.replayed.isFinished,
+        `cursor = ${harness.replayed.cursor}/${harness.replayed.totalFrames}`,
+      );
+      if (recording.projectId) {
+        recorder.check(
+          'the recording was made against this document',
+          recording.projectId === project.id,
+          `recording is from "${recording.projectId}", playing "${project.id}"`,
+        );
+      }
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Runner and CLI.
 // ---------------------------------------------------------------------------
 
-export function runPlaytest(playtest: Playtest, seed = 1234): Report {
+export function runPlaytest(
+  playtest: Playtest,
+  seed = 1234,
+  options: { record?: boolean } = {},
+): Report {
   const project = playtest.create();
-  const harness = createHarness(project, { seed });
-  const recorder = new Recorder(harness, 1 / (project.settings?.stepRate ?? 60));
+  const stepRate = project.settings?.stepRate ?? playtest.replay?.stepRate ?? 60;
 
-  playtest.play(harness, recorder);
+  let source: StepSource;
+  let recordingHarness: RecordingHarness | null = null;
+  if (playtest.replay) {
+    source = createReplayHarness(project, playtest.replay);
+  } else if (options.record) {
+    recordingHarness = createRecordingHarness(project, { seed });
+    source = recordingHarness;
+  } else {
+    source = createHarness(project, { seed });
+  }
+  const recorder = new Recorder(source, 1 / stepRate);
 
-  const diagnostics = harness.world
+  playtest.play(source, recorder);
+
+  const diagnostics = source.world
     .getDiagnostics()
     .filter((diagnostic) => diagnostic.level === 'error' || diagnostic.level === 'warning')
     .map((diagnostic) => ({ level: diagnostic.level, message: diagnostic.message }));
 
   const variables: Record<string, string> = {};
-  for (const entry of harness.world.getVariableEntries()) variables[entry.name] = String(entry.value);
+  for (const entry of source.world.getVariableEntries()) variables[entry.name] = String(entry.value);
 
   const checks = [...recorder.checks];
   if (checks.length === 0) {
@@ -545,9 +626,21 @@ export function runPlaytest(playtest: Playtest, seed = 1234): Report {
     detail: diagnostics.length ? diagnostics.map((item) => `${item.level}: ${item.message}`).join('; ') : undefined,
   });
 
+  const recording: Recording | undefined = recordingHarness
+    ? {
+        ...createEmptyRecording({
+          stepRate,
+          seed: playtest.replay ? playtest.replay.seed : seed,
+          projectId: project.id,
+          createdAt: Date.now(),
+        }),
+        frames: recordingHarness.recording.frames,
+      }
+    : undefined;
+
   return {
     scenario: playtest.id,
-    seed,
+    seed: playtest.replay ? playtest.replay.seed : seed,
     steps: recorder.steps,
     simulatedSeconds: Number(recorder.elapsed.toFixed(2)),
     passed: checks.every((check) => check.ok),
@@ -555,6 +648,16 @@ export function runPlaytest(playtest: Playtest, seed = 1234): Report {
     checks,
     diagnostics,
     variables,
+    recording,
+    replay: playtest.replay
+      ? {
+          frames: playtest.replay.frames.length,
+          seed: playtest.replay.seed,
+          stepRate: playtest.replay.stepRate,
+          projectId: playtest.replay.projectId,
+          matchedDocument: !playtest.replay.projectId || playtest.replay.projectId === project.id,
+        }
+      : undefined,
   };
 }
 
@@ -584,6 +687,17 @@ function printReport(report: Report, options: { timeline: boolean; maxLines: num
     console.log(`  ${item.ok ? 'ok  ' : 'FAIL'}  ${item.label}${detail}`);
   }
 
+  if (report.recording) {
+    console.log('\nRecording');
+    console.log(`  captured ${report.recording.frames.length} frames (replay with --replay)`);
+  }
+
+  if (report.replay) {
+    console.log('\nRecording');
+    console.log(`  ${report.replay.frames} frames @ ${report.replay.stepRate} steps/s, seed ${report.replay.seed}`);
+    console.log(`  made against ${report.replay.projectId || 'an unknown document'}`);
+  }
+
   console.log('\nVariables');
   const entries = Object.entries(report.variables);
   if (entries.length === 0) console.log('  (none)');
@@ -595,7 +709,18 @@ function printReport(report: Report, options: { timeline: boolean; maxLines: num
 function main(): void {
   const args = process.argv.slice(2);
   const flags = args.filter((argument) => argument.startsWith('--'));
-  const positional = args.filter((argument) => !argument.startsWith('--'));
+
+  /** Flags that take a following value, so that value is not read as a scenario name. */
+  const VALUE_FLAGS = new Set(['--document', '--replay', '--save-recording', '--seconds', '--seed', '--timeline']);
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument.startsWith('--')) {
+      if (VALUE_FLAGS.has(argument) && args[index + 1] && !args[index + 1].startsWith('--')) index += 1;
+      continue;
+    }
+    if (!argument.startsWith('-')) positional.push(argument);
+  }
   const valueOf = (name: string): string | null => {
     const inline = flags.find((flag) => flag.startsWith(`--${name}=`));
     if (inline) return inline.slice(name.length + 3);
@@ -619,6 +744,8 @@ function main(): void {
         'Options:',
         '  --list                 list the scenarios and exit',
         '  --document <path>      play an exported .json document instead',
+        '  --replay <path>        replay a recorded session (see --document too)',
+        '  --save-recording <path>  capture the pilot\'s input to a recording file',
         '  --seconds <n>          walking budget for --document (default 15)',
         '  --seed <n>             random seed (default 1234)',
         '  --json                 print the report as JSON',
@@ -638,9 +765,58 @@ function main(): void {
 
   const seed = Number.parseInt(valueOf('seed') ?? '1234', 10);
   const documentPath = valueOf('document');
+  const replayPath = valueOf('replay');
   let playtest: Playtest;
 
-  if (documentPath) {
+  if (replayPath) {
+    let text: string;
+    try {
+      text = readFileSync(resolve(process.cwd(), replayPath), 'utf8');
+    } catch (error) {
+      console.error(`Could not read ${replayPath}: ${(error as Error).message}`);
+      process.exitCode = 1;
+      return;
+    }
+    const parsed = parseRecording(text);
+    if (!parsed.ok) {
+      console.error(`Could not load ${replayPath}: ${parsed.error}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    let project: Project;
+    if (documentPath) {
+      let documentText: string;
+      try {
+        documentText = readFileSync(resolve(process.cwd(), documentPath), 'utf8');
+      } catch (error) {
+        console.error(`Could not read ${documentPath}: ${(error as Error).message}`);
+        process.exitCode = 1;
+        return;
+      }
+      const document = parseProject(documentText);
+      if (!document.ok) {
+        console.error(`Could not load ${documentPath}: ${document.error}`);
+        process.exitCode = 1;
+        return;
+      }
+      project = document.project;
+    } else {
+      // No document given: fall back to the shipped template the recording was
+      // made against (unknown ids fall back to the tutorial scene, and the
+      // report calls the mismatch out as a failed check).
+      project = createSceneTemplate(parsed.recording.projectId);
+    }
+
+    if (parsed.migratedFrom !== null) {
+      console.log(`(migrated ${replayPath} from recording version ${parsed.migratedFrom})`);
+    }
+    console.log(
+      `Recording: ${parsed.recording.frames.length} frames @ ${parsed.recording.stepRate} steps/s, ` +
+        `seed ${parsed.recording.seed}, made against "${parsed.recording.projectId || 'an unknown document'}"`,
+    );
+    playtest = createReplayPlaytest(project, parsed.recording, replayPath);
+  } else if (documentPath) {
     let text: string;
     try {
       text = readFileSync(resolve(process.cwd(), documentPath), 'utf8');
@@ -671,7 +847,22 @@ function main(): void {
     playtest = found;
   }
 
-  const report = runPlaytest(playtest, Number.isFinite(seed) ? seed : 1234);
+  const savePath = valueOf('save-recording');
+  const report = runPlaytest(playtest, Number.isFinite(seed) ? seed : 1234, { record: Boolean(savePath) });
+
+  if (savePath) {
+    if (report.recording) {
+      writeFileSync(resolve(process.cwd(), savePath), serializeRecording(report.recording, { pretty: true }));
+      console.log(
+        `Saved ${report.recording.frames.length} frames to ${savePath} — replay it with ` +
+          `\`npm run playtest -- --replay ${savePath}\`.`,
+      );
+    } else {
+      console.error('Nothing to save: a replay run cannot be recorded again.');
+      process.exitCode = 1;
+    }
+  }
+
   if (has('json')) {
     console.log(JSON.stringify(report, null, 2));
   } else {

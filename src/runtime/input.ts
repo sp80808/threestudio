@@ -76,6 +76,7 @@ export function createDomInput(element: HTMLElement): DomInput {
     },
     isKeyDown: (code) => keys.has(code),
     getPressedKeys: () => [...pressed],
+    getHeldKeys: () => [...keys],
     takePointerPicks: () => picks.splice(0, picks.length),
     pushPick: (entityId, point = [0, 0, 0]) => {
       picks.push({ entityId, point });
@@ -113,6 +114,7 @@ export function createScriptedInput(): ScriptedInput {
     getMovementAxis: () => ({ ...axis }),
     isKeyDown: (code) => keys.has(code),
     getPressedKeys: () => [...pressed],
+    getHeldKeys: () => [...keys],
     takePointerPicks: () => picks.splice(0, picks.length),
     setKey: (code, down) => {
       if (down) {

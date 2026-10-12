@@ -8,7 +8,7 @@
  * HUD proves at a glance that play mode is running on isolated state.
  */
 
-import { AlertTriangle, Info, Pause, Play, SkipForward, Square } from 'lucide-react';
+import { AlertTriangle, Circle, Download, Info, Pause, Play, SkipForward, Square } from 'lucide-react';
 import { usePlayStore } from '../editor/playStore';
 import { useEditorStore } from '../editor/store';
 import { cn } from '../lib/utils';
@@ -21,6 +21,11 @@ export default function PlayHud() {
   const requestPause = usePlayStore((state) => state.requestPause);
   const requestStep = usePlayStore((state) => state.requestStep);
   const requestStop = usePlayStore((state) => state.requestStop);
+  const recording = usePlayStore((state) => state.recording);
+  const recordedFrames = usePlayStore((state) => state.recordedFrames);
+  const requestRecord = usePlayStore((state) => state.requestRecord);
+  const requestStopRecording = usePlayStore((state) => state.requestStopRecording);
+  const requestDownloadRecording = usePlayStore((state) => state.requestDownloadRecording);
 
   const project = useEditorStore((state) => state.project);
   const stepRate = project.settings?.stepRate ?? 60;
@@ -69,6 +74,32 @@ export default function PlayHud() {
         >
           <Square size={12} /> Stop
         </button>
+        {recording ? (
+          <button
+            onClick={requestStopRecording}
+            className="flex items-center gap-1 rounded bg-red-950/60 px-2 py-1 text-red-300 hover:bg-red-900/60"
+            title="Stop capturing input (the game keeps running)"
+          >
+            <Circle size={12} fill="currentColor" /> {recordedFrames}
+          </button>
+        ) : (
+          <button
+            onClick={requestRecord}
+            className="flex items-center gap-1 rounded px-2 py-1 text-zinc-400 hover:bg-zinc-800"
+            title="Record this session's input so it can be replayed later"
+          >
+            <Circle size={12} className="text-red-400" /> Record
+          </button>
+        )}
+        {recordedFrames > 0 && !recording ? (
+          <button
+            onClick={requestDownloadRecording}
+            className="flex items-center gap-1 rounded px-2 py-1 text-zinc-300 hover:bg-zinc-800"
+            title="Download the recorded session as JSON — replay it with `npm run playtest -- --replay <file>`"
+          >
+            <Download size={12} /> {recordedFrames}
+          </button>
+        ) : null}
         <span className="ml-1 border-l border-zinc-800 pl-2 font-mono text-[10px] text-zinc-500">
           {stepRate} Hz · t {stats?.time.toFixed(2) ?? '0.00'}s · {stats?.steps ?? 0} steps
         </span>

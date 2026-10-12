@@ -23,6 +23,8 @@ import { TransformControls } from 'three/examples/jsm/controls/TransformControls
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { resolveSettings, type Entity, type Project } from '../simulation/schema';
 import { createDomInput, type DomInput } from '../runtime/input';
+import { createEmptyRecording, createRecordingInput, type Recording, type RecordingInput } from '../runtime/replay';
+import { serializeRecording } from '../persistence/recording';
 import { createWorld, type World } from '../runtime/world';
 import { useEditorStore } from '../editor/store';
 import { PLAY_EVENTS, usePlayStore } from '../editor/playStore';
@@ -177,6 +179,10 @@ export default function Viewport() {
     // ---------------------------------------------------------------------
     let world: World | null = null;
     let input: DomInput | null = null;
+    let recordingInput: RecordingInput | null = null;
+    /** Kept after the session ends so a recording can still be downloaded. */
+    let lastRecording: Recording | null = null;
+    let sessionSeed = 0;
     const hudThrottle = { frames: 0 };
     const isPlaying = () => world !== null;
 
@@ -187,6 +193,8 @@ export default function Viewport() {
           stats: null,
           variables: [],
           diagnostics: [],
+          recording: false,
+          recordedFrames: lastRecording?.frames.length ?? 0,
         });
         return;
       }
@@ -195,6 +203,8 @@ export default function Viewport() {
         stats: world.getStats(),
         variables: world.getVariableEntries(),
         diagnostics: world.getDiagnostics().slice(-30).reverse(),
+        recording: recordingInput?.isRecording ?? false,
+        recordedFrames: recordingInput?.frames.length ?? 0,
       });
     };
 
@@ -204,7 +214,11 @@ export default function Viewport() {
       if (Object.keys(project.entities).length === 0) return;
 
       input = createDomInput(renderer.domElement);
-      world = createWorld({ project, input, seed: project.id.length * 7919 + 13 });
+      // Every session is replayable: the runtime reads from the recording
+      // wrapper, which forwards to the DOM input and captures frames on demand.
+      recordingInput = createRecordingInput(input);
+      sessionSeed = project.id.length * 7919 + 13;
+      world = createWorld({ project, input: recordingInput, seed: sessionSeed });
       world.start();
 
       // Play mode owns the scene: hide editor-only helpers and hand control to
@@ -259,6 +273,23 @@ export default function Viewport() {
       input?.dispose();
       input = null;
 
+      // Keep whatever was captured so it can still be downloaded afterwards.
+      if (recordingInput) {
+        recordingInput.stop();
+        if (recordingInput.frames.length > 0) {
+          lastRecording = {
+            ...createEmptyRecording({
+              stepRate: resolveSettings(useEditorStore.getState().project).stepRate,
+              seed: sessionSeed,
+              projectId: useEditorStore.getState().project.id,
+              createdAt: Date.now(),
+            }),
+            frames: recordingInput.frames,
+          };
+        }
+        recordingInput = null;
+      }
+
       grid.visible = useViewStore.getState().showGrid;
       transformControl.enabled = true;
       for (const [id, view] of views) {
@@ -278,6 +309,45 @@ export default function Viewport() {
       if (world.isPaused()) world.resume();
       else world.pause();
       publishSnapshot();
+    };
+
+    const recordPlayMode = () => {
+      if (!recordingInput) return;
+      recordingInput.start();
+      publishSnapshot();
+    };
+
+    const stopRecording = () => {
+      if (!recordingInput) return;
+      recordingInput.stop();
+      publishSnapshot();
+    };
+
+    const downloadRecording = () => {
+      const recording: Recording | null =
+        recordingInput && recordingInput.frames.length > 0
+          ? {
+              ...createEmptyRecording({
+                stepRate: resolveSettings(useEditorStore.getState().project).stepRate,
+                seed: sessionSeed,
+                projectId: useEditorStore.getState().project.id,
+                createdAt: Date.now(),
+              }),
+              frames: recordingInput.frames,
+            }
+          : lastRecording;
+      if (!recording) return;
+
+      const project = useEditorStore.getState().project;
+      const blob = new Blob([serializeRecording(recording, { pretty: true })], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${project.name || 'session'}.threestudio-recording.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
     };
 
     const stepPlayMode = () => {
@@ -498,6 +568,9 @@ export default function Viewport() {
     window.addEventListener('focus-selected', handleFocus);
     window.addEventListener(PLAY_EVENTS.start, startPlayMode);
     window.addEventListener(PLAY_EVENTS.stop, stopPlayMode);
+    window.addEventListener(PLAY_EVENTS.record, recordPlayMode);
+    window.addEventListener(PLAY_EVENTS.stopRecording, stopRecording);
+    window.addEventListener(PLAY_EVENTS.downloadRecording, downloadRecording);
     window.addEventListener(PLAY_EVENTS.pause, pausePlayMode);
     window.addEventListener(PLAY_EVENTS.step, stepPlayMode);
 
@@ -564,6 +637,9 @@ export default function Viewport() {
       window.removeEventListener('focus-selected', handleFocus);
       window.removeEventListener(PLAY_EVENTS.start, startPlayMode);
       window.removeEventListener(PLAY_EVENTS.stop, stopPlayMode);
+      window.removeEventListener(PLAY_EVENTS.record, recordPlayMode);
+      window.removeEventListener(PLAY_EVENTS.stopRecording, stopRecording);
+      window.removeEventListener(PLAY_EVENTS.downloadRecording, downloadRecording);
       window.removeEventListener(PLAY_EVENTS.pause, pausePlayMode);
       window.removeEventListener(PLAY_EVENTS.step, stepPlayMode);
 

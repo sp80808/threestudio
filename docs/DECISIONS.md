@@ -75,3 +75,15 @@ real DOM events.
 store's initial state, so assertions about selection and editing silently passed against the
 wrong panel. Mounting the real components keeps the test honest about what a user sees, and
 lets the tests assert that a UI edit reaches the store.
+
+## 12. Input Is Recorded as Data, Not as a Video
+**Decision**: a recording is one frame per fixed step (movement axis, pressed/held keys, pointer
+picks) in `src/runtime/replay.ts`, validated in `src/persistence/recording.ts`, and replayed
+through the same `GameInput` interface the keyboard implements.
+**Reasoning**: the world is already fixed-step and seeded, so recorded input reproduces a
+session exactly (asserted in `src/runtime/replay.test.ts`). That turns a play session into a
+regression test and a bug report at once, and it needs no video, no codec and no new runtime
+dependency — the recording is a few kilobytes of JSON that a reviewer can read.
+**Trade-off**: a recording only reproduces against the document, seed and step rate it was
+captured with. The runner therefore checks the recording's `projectId` against the document it
+is playing and fails loudly on a mismatch rather than reporting a misleading result.

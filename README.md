@@ -18,8 +18,9 @@ walk onto the plate, the door slides open; collect three gems and the portal app
 | Play mode | Fixed-step simulation, isolated from the document, with HUD, pause and single-step |
 | Physics | Kinematic collision (solid volumes + triggers) — deterministic, no dependencies |
 | Persistence | IndexedDB save/load, JSON import/export with v1→v2 migration |
+| Record & replay | Record a play session's input in the editor and replay it headlessly, frame for frame |
 | Playtesting | `npm run playtest` drives a scene headlessly with a scripted pilot and prints a timeline + pass/fail report |
-| Quality gates | `npm run lint` (strict TS), `npm test` (90 tests incl. acceptance play-throughs and jsdom panel mounts), `npm run playtest`, `npm run build` |
+| Quality gates | `npm run lint` (strict TS), `npm test` (103 tests incl. acceptance play-throughs, record/replay and jsdom panel mounts), `npm run playtest`, `npm run build` |
 
 The engine core (`src/runtime/`) is free of React and Three.js: it is a pure TypeScript
 simulation that can run headlessly, in a worker, or inside tests.
@@ -41,12 +42,28 @@ npm run playtest                          # the Pressure Plate Door acceptance s
 npm run playtest -- playground            # the sandbox scene
 npm run playtest -- --list                # available scenes
 npm run playtest -- --document my.json    # play any exported document
+npm run playtest -- --replay session.json # replay a recorded session
 npm run playtest -- --json                # machine-readable report
 ```
 
 A run prints a timeline of everything that changed (overlaps, messages turned into movement,
 variables, visibility), the checks it made, and the final variable values. It exits non-zero
 when a check fails or the runtime logs a warning, which is why CI runs it after the unit tests.
+
+### Record and replay
+
+Press **Play** in the editor and hit **Record** in the play bar: every fixed step of input
+(keys, movement axis, clicks) is captured. Stop recording, then press the download button to
+save a `.threestudio-recording.json` and replay it:
+
+```
+npm run playtest -- --replay session.threestudio-recording.json
+npm run playtest -- --replay session.json --document my-scene.json
+npm run playtest -- --save-recording out.json     # capture the scripted pilot instead
+```
+
+A replayed run reproduces the recorded session frame for frame, so a recording works as a
+regression test (and as a bug report: it carries the exact input that caused the problem).
 
 ## Prototype branches
 
