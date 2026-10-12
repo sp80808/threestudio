@@ -14,7 +14,7 @@
 import { act } from 'react';
 import { type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProject, createEntity, createVariable, type Project } from '../simulation/schema';
 import { createPlaygroundScene, createPressurePlateDoorScene } from '../simulation/scenarios';
 import { createBehaviourInstance } from '../runtime/behaviours';
@@ -187,6 +187,33 @@ describe('editor panels', () => {
     // The registry-driven panel shows the unknown behaviour but offers no fields.
     expect(text()).toContain('quantum-teleport');
     expect(text()).toContain('Spin');
+  });
+
+  it('asks the viewport to export a GLB and reports the result', () => {
+    mount(panels);
+
+    const listener = vi.fn();
+    window.addEventListener('export-glb', listener);
+    const button = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.getAttribute('title')?.startsWith('Export the scene as GLB'),
+    );
+    click(button ?? null);
+    window.removeEventListener('export-glb', listener);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(text()).toContain('Preparing the GLB export');
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('glb-exported', { detail: { ok: true, name: 'Vault.glb' } }));
+    });
+    expect(text()).toContain('Exported Vault.glb as GLB');
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('glb-exported', { detail: { ok: false, error: 'no WebGL context' } }),
+      );
+    });
+    expect(text()).toContain('GLB export failed: no WebGL context');
   });
 
   it('reflects the dirty flag in the toolbar and status bar', () => {

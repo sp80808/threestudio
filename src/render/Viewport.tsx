@@ -426,6 +426,8 @@ export default function Viewport() {
       const exportScene = new THREE.Scene();
       for (const view of views.values()) exportScene.add(view.group.clone() as THREE.Group);
 
+      const fileName = `${useEditorStore.getState().project.name || 'scene'}.glb`;
+
       exporter.parse(
         exportScene,
         (gltf) => {
@@ -433,11 +435,20 @@ export default function Viewport() {
           const url = URL.createObjectURL(blob);
           const anchor = document.createElement('a');
           anchor.href = url;
-          anchor.download = `${useEditorStore.getState().project.name || 'scene'}.glb`;
+          anchor.download = fileName;
           anchor.click();
           URL.revokeObjectURL(url);
+          // The toolbar owns the toast, so report the result back to it.
+          window.dispatchEvent(new CustomEvent('glb-exported', { detail: { ok: true, name: fileName } }));
         },
-        (error) => console.error('Error exporting GLB:', error),
+        (error) => {
+          console.error('Error exporting GLB:', error);
+          window.dispatchEvent(
+            new CustomEvent('glb-exported', {
+              detail: { ok: false, error: error instanceof Error ? error.message : String(error) },
+            }),
+          );
+        },
         { binary: true },
       );
     };

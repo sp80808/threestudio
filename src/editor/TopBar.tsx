@@ -5,7 +5,7 @@
  * viewport display toggles.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Box,
   BoxSelect,
@@ -17,6 +17,7 @@ import {
   Globe,
   Grid3x3,
   Move,
+  Package,
   Pause,
   Play,
   Redo,
@@ -95,6 +96,22 @@ export default function TopBar() {
     setMessage(`Exported ${summariseProject(project)}`);
   };
 
+  const handleExportGlb = () => {
+    // The viewport owns the Three.js scene, so ask it to export (see
+    // `handleExport` there) and wait for its result event before reporting.
+    window.dispatchEvent(new CustomEvent('export-glb'));
+    setMessage('Preparing the GLB export…');
+  };
+
+  useEffect(() => {
+    const onResult = (event: Event) => {
+      const detail = (event as CustomEvent<{ ok: boolean; name?: string; error?: string }>).detail;
+      setMessage(detail?.ok ? `Exported ${detail.name ?? 'the scene'} as GLB.` : `GLB export failed: ${detail?.error ?? 'unknown error'}`);
+    };
+    window.addEventListener('glb-exported', onResult);
+    return () => window.removeEventListener('glb-exported', onResult);
+  }, []);
+
   const handleImportJson = async (file: File) => {
     const text = await file.text();
     const result = parseProject(text);
@@ -133,6 +150,14 @@ export default function TopBar() {
         </button>
         <button onClick={() => fileInputRef.current?.click()} className={buttonClass} title="Import project JSON">
           <Upload size={16} />
+        </button>
+        <button
+          onClick={handleExportGlb}
+          disabled={editDisabled}
+          className={buttonClass}
+          title="Export the scene as GLB (for Blender, Godot, three.js viewers…)"
+        >
+          <Package size={16} />
         </button>
         <input
           ref={fileInputRef}
