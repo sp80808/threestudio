@@ -16,6 +16,8 @@ import { act } from 'react';
 import { type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as THREE from 'three';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { createDefaultProject, createEntity, createVariable, type Project } from '../simulation/schema';
 import { db, saveProject } from '../persistence/db';
 import { createPlaygroundScene, createPressurePlateDoorScene } from '../simulation/scenarios';
@@ -291,6 +293,41 @@ describe('editor panels', () => {
       'Library playground',
       'Training level',
     ]);
+  });
+
+  it('imports a GLB through the toolbar and reports what it added', async () => {
+    // Export a small scene to a real GLB, then feed it to the toolbar as if the
+    // author had picked the file themselves.
+    const source = new THREE.Scene();
+    const crate = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 2, 3),
+      new THREE.MeshStandardMaterial({ color: 0x44aa88 }),
+    );
+    crate.name = 'Crate';
+    source.add(crate);
+    const glb = await new Promise<ArrayBuffer>((resolve, reject) => {
+      new GLTFExporter().parse(source, (result) => resolve(result as ArrayBuffer), reject, { binary: true });
+    });
+
+    loadProject(createDefaultProject());
+    mount(<TopBar />);
+
+    const input = container.querySelector('input[accept*="glb"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    const file = new File([glb], 'crate.glb', { type: 'model/gltf-binary' });
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Importing loads the loader module and parses the file, so wait for it.
+    await vi.waitFor(() => {
+      const names = Object.values(useEditorStore.getState().project.entities).map((entity) => entity.name);
+      expect(names).toContain('Crate');
+    });
+    expect(text()).toContain('Imported 1 mesh as 1 object');
   });
 
   it('offers record and download controls in play mode', () => {

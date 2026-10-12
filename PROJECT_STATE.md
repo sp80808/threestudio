@@ -69,6 +69,16 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
   values, collider editor with world-size read-out, hierarchy with search/hide/duplicate.
 - `scene-builder`, `playStore`, `viewStore`, `StatusBar`, template picker, JSON import/export.
 
+**Model import (`src/render/model-import.ts`)**
+- The toolbar imports `.glb` / `.gltf` files. Because the document has no binary asset slot, an
+  import converts the file's node hierarchy into entities: each mesh becomes a box sized to its
+  bounding box with the node's transform and colour, non-mesh nodes keep the hierarchy, and the
+  result lands as one undoable edit (ids are namespaced so importing twice never overwrites).
+- Importing is capped at 2000 objects and refuses to flood a scene; the loader is a dynamic
+  import, so nobody who never imports pays for the glTF parser.
+- Round trip: a scene exported as GLB and imported again keeps its transforms (asserted in
+  `src/render/model-import.test.ts`, using the exporter in the test).
+
 **Project library (`src/editor/ProjectBrowser.tsx`, `src/persistence/db.ts`)**
 - The toolbar's folder button opens a browser of the documents saved in this browser:
   open, save a copy under a new name, delete (with confirmation), and see when each was
@@ -95,5 +105,5 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 ### Next Steps
 - Rapier-backed physics behind the existing `resolveMovement` / `WorldAccess` contract.
 - Balance regression runs: record a session per level and diff `npm run playtest` reports in CI.
-- Asset import pipeline (glTF/GLB in): the GLB export button is wired, the reverse is not.
-- Asset import pipeline (glTF/GLB in) so imported models can join scenes.
+- Real mesh import: keep the file's meshes (and materials) instead of box approximations, which
+  needs an asset store beside the document.

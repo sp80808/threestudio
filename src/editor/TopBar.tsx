@@ -18,6 +18,7 @@ import {
   Grid3x3,
   Move,
   Package,
+  PackagePlus,
   Pause,
   Play,
   Redo,
@@ -67,6 +68,7 @@ export default function TopBar() {
   const loadTemplate = useEditorStore((state) => state.loadTemplate);
   const replaceProject = useEditorStore((state) => state.replaceProject);
   const addPrimitive = useEditorStore((state) => state.addPrimitive);
+  const addEntities = useEditorStore((state) => state.addEntities);
   const removeEntity = useEditorStore((state) => state.removeEntity);
   const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
   const transformMode = useEditorStore((state) => state.transformMode);
@@ -84,6 +86,7 @@ export default function TopBar() {
   const toggleGrid = useViewStore((state) => state.toggleGrid);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelInputRef = useRef<HTMLInputElement>(null);
   const [menu, setMenu] = useState<'none' | 'templates' | 'projects'>('none');
   const [message, setMessage] = useState<string | null>(null);
 
@@ -112,6 +115,29 @@ export default function TopBar() {
     window.addEventListener('glb-exported', onResult);
     return () => window.removeEventListener('glb-exported', onResult);
   }, []);
+
+  const handleImportModel = async (file: File) => {
+    setMessage(`Importing ${file.name}…`);
+    try {
+      // The importer drags in the glTF loader (and its parser), which nobody who
+      // never imports a model should have to download.
+      const { importModelFile } = await import('../render/model-import');
+      const imported = await importModelFile(file);
+      if (imported.entities.length === 0) {
+        setMessage(`${file.name} contains no objects.`);
+        return;
+      }
+      addEntities(imported.entities);
+      setMessage(
+        `Imported ${imported.meshCount} mesh${imported.meshCount === 1 ? '' : 'es'} as ` +
+          `${imported.entities.length} object${imported.entities.length === 1 ? '' : 's'}` +
+          (imported.truncated ? ` (stopped at ${imported.entities.length} — the file is bigger)` : '') +
+          '. Model meshes arrive as boxes: add colliders and behaviours to make them game objects.',
+      );
+    } catch (error) {
+      setMessage(`Could not import ${file.name}: ${(error as Error).message}`);
+    }
+  };
 
   const handleImportJson = async (file: File) => {
     const text = await file.text();
@@ -164,6 +190,25 @@ export default function TopBar() {
         >
           <Package size={16} />
         </button>
+        <button
+          onClick={() => modelInputRef.current?.click()}
+          disabled={editDisabled}
+          className={buttonClass}
+          title="Import a model (.glb / .gltf) as editable objects"
+        >
+          <PackagePlus size={16} />
+        </button>
+        <input
+          ref={modelInputRef}
+          type="file"
+          accept="model/gltf-binary,model/gltf+json,.glb,.gltf"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void handleImportModel(file);
+            event.target.value = '';
+          }}
+        />
         <input
           ref={fileInputRef}
           type="file"

@@ -271,3 +271,45 @@ describe('project timestamps', () => {
     expect(relativeTime(now - 5 * 86_400_000, now)).toMatch(/\d/);
   });
 });
+
+describe('addEntities', () => {
+  beforeEach(() => reset());
+
+  it('adds imported objects as a single undoable edit', () => {
+    const imported = [
+      createEntity({ id: 'rig', name: 'Rig', position: [1, 0, 0] }),
+      createEntity({ id: 'arm', name: 'Arm', parentId: 'rig', geometry: 'box' }),
+    ];
+    useEditorStore.getState().addEntities(imported);
+
+    expect(Object.keys(useEditorStore.getState().project.entities).sort()).toEqual(['arm', 'rig']);
+    expect(useEditorStore.getState().selectedEntityId).toBe('rig');
+
+    useEditorStore.getState().undo();
+    expect(Object.keys(useEditorStore.getState().project.entities)).toEqual([]);
+  });
+
+  it('renames colliding ids, including the parent links', () => {
+    useEditorStore.getState().addEntities([
+      createEntity({ id: 'rig', name: 'Rig' }),
+      createEntity({ id: 'arm', name: 'Arm', parentId: 'rig' }),
+    ]);
+    useEditorStore.getState().addEntities([
+      createEntity({ id: 'rig', name: 'Rig' }),
+      createEntity({ id: 'arm', name: 'Arm', parentId: 'rig' }),
+    ]);
+
+    const entities = useEditorStore.getState().project.entities;
+    expect(Object.keys(entities).sort()).toEqual(['arm', 'arm-2', 'rig', 'rig-2']);
+    // The second rig's child points at the second rig, not the first.
+    expect(entities['arm-2'].parentId).toBe('rig-2');
+    expect(entities['arm'].parentId).toBe('rig');
+  });
+
+  it('does nothing when there is nothing to add', () => {
+    const before = useEditorStore.getState().project;
+    useEditorStore.getState().addEntities([]);
+    expect(useEditorStore.getState().project).toBe(before);
+    expect(useEditorStore.getState().past).toEqual([]);
+  });
+});

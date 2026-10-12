@@ -70,6 +70,13 @@ interface EditorState {
     options?: { name?: string; color?: string; collider?: boolean; position?: [number, number, number] },
   ) => void;
   removeEntity: (id: string) => void;
+  /**
+   * Adds several objects as one undoable edit (used by the model importer).
+   *
+   * Imported ids are namespaced so importing the same file twice does not
+   * overwrite the first copy.
+   */
+  addEntities: (entities: Entity[], options?: { select?: string | null }) => void;
   duplicateEntity: (id: string) => void;
   updateEntityTransform: (id: string, transform: Entity['transform']) => void;
   updateEntityName: (id: string, name: string) => void;
@@ -229,6 +236,42 @@ export const useEditorStore = create<EditorState>((set, get) => {
       });
 
       if (get().selectedEntityId === id) get().selectEntity(null);
+    },
+
+    addEntities: (incoming, options) => {
+      if (incoming.length === 0) return;
+
+      const taken = new Set(Object.keys(get().project.entities));
+      const renamed = new Map<string, string>();
+      const unique = incoming.map((entity) => {
+        let id = entity.id;
+        let suffix = 2;
+        while (taken.has(id)) {
+          id = `${entity.id}-${suffix}`;
+          suffix += 1;
+        }
+        taken.add(id);
+        if (id !== entity.id) renamed.set(entity.id, id);
+        return id === entity.id ? entity : { ...entity, id };
+      });
+
+      // References between the new objects (parent links) follow the new ids.
+      const entities = unique.map((entity) =>
+        entity.parentId && renamed.has(entity.parentId)
+          ? { ...entity, parentId: renamed.get(entity.parentId) as string }
+          : entity,
+      );
+
+      commit((project) => ({
+        ...project,
+        entities: {
+          ...project.entities,
+          ...Object.fromEntries(entities.map((entity) => [entity.id, entity])),
+        },
+      }));
+
+      const select = options?.select === undefined ? entities[0].id : options.select;
+      if (select) get().selectEntity(select);
     },
 
     duplicateEntity: (id) => {

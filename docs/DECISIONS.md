@@ -118,3 +118,17 @@ autosave, the toolbar can switch autosave off, and a dirty document warns before
 closes. `fake-indexeddb` makes all of it testable in Node.
 **Trade-off**: nothing leaves the machine, so sharing means exporting JSON. That is the right
 default until import/export formats settle (see decision 3, which keeps the document portable).
+
+## 15. Imported Models Become Engine Objects
+**Decision**: importing a `.glb` / `.gltf` converts its nodes into document entities — a box per
+mesh, sized to the mesh's bounding box, with the node's transform, colour and parent link —
+rather than storing the file as an asset beside the document.
+**Reasoning**: the document is portable JSON of primitives, behaviours and rules (decisions 3 and
+13). An asset slot would either bloat that JSON with megabytes of base64 or split the project
+into a document plus hidden binaries, and any exported `.json` would no longer be a complete
+project. Converting keeps every promise the editor makes about imported objects: they appear in
+the hierarchy, can be attached to other objects, take colliders and behaviours, undo as one edit,
+play through the same collision code, and export back out as GLB.
+**Trade-off**: fidelity is lost — meshes become boxes and materials become a colour. That is the
+honest limit of a blockout tool, and the follow-up is an asset store *beside* the document
+(imported meshes referenced by id, packaged on export) if authored models become the main input.

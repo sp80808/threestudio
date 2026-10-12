@@ -10,7 +10,9 @@
   (WHEN/IF/DO), `collision.ts` (kinematic volumes), `variables.ts`, `input.ts`,
   `diagnostics.ts`, `replay.ts` (input recording/replay), plus `math.ts` / `values.ts` helpers.
 - **render/**: Three.js viewport, document→scene synchronisation, collider visualisation,
-  play-mode HUD, glTF export.
+  play-mode HUD, glTF export and import (`model-import.ts`). Import is the only place that
+  *reads* foreign 3D data, and it converts it into document entities so nothing downstream
+  needs to know where an object came from.
 - **persistence/**: IndexedDB via Dexie, JSON import/export, document migration, recording
   import/export (`recording.ts`).
 
