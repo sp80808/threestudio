@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   createDefaultProject,
@@ -7,6 +8,8 @@ import {
   createVariable,
 } from '../simulation/schema';
 import { createBehaviourInstance } from '../runtime/behaviours';
+import { db, loadProject, saveProject } from '../persistence/db';
+import { createPlaygroundScene } from '../simulation/scenarios';
 import { useEditorStore } from './store';
 
 const reset = () => {
@@ -175,5 +178,96 @@ describe('parenting', () => {
     useEditorStore.getState().undo();
 
     expect(useEditorStore.getState().project.entities['gem-1'].parentId).toBeNull();
+  });
+});
+
+describe('project library', () => {
+  beforeEach(async () => {
+    await db.documents.clear();
+    await db.projects.clear();
+    useEditorStore.getState().loadTemplate('pressure-plate-door');
+    useEditorStore.setState({ library: [], autosave: true, lastAutosaveAt: null });
+    await useEditorStore.getState().refreshLibrary();
+  });
+
+  it('saves the open document and lists it', async () => {
+    await useEditorStore.getState().save();
+
+    const library = useEditorStore.getState().library;
+    expect(library).toHaveLength(1);
+    expect(library[0].name).toBe('Pressure Plate Door');
+    expect(useEditorStore.getState().dirty).toBe(false);
+    expect(useEditorStore.getState().lastSavedAt).not.toBeNull();
+  });
+
+  it('saves a copy under a new id without touching the original', async () => {
+    await useEditorStore.getState().save();
+    const originalId = useEditorStore.getState().project.id;
+
+    await useEditorStore.getState().saveAs('Training level');
+
+    const state = useEditorStore.getState();
+    expect(state.project.id).not.toBe(originalId);
+    expect(state.project.name).toBe('Training level');
+    expect(state.past).toEqual([]);
+    expect(state.library.map((entry) => entry.name).sort()).toEqual(['Pressure Plate Door', 'Training level']);
+    expect(await loadProject(originalId)).toBeDefined();
+  });
+
+  it('opens a saved project and clears the dirty flag', async () => {
+    const playgroundId = 'saved-playground';
+    await saveProject({ ...createPlaygroundScene(), id: playgroundId, name: 'Saved playground' });
+    await useEditorStore.getState().refreshLibrary();
+
+    await useEditorStore.getState().openDocument(playgroundId);
+
+    const state = useEditorStore.getState();
+    expect(state.project.name).toBe('Saved playground');
+    expect(state.selectedEntityId).toBeNull();
+    expect(state.dirty).toBe(false);
+  });
+
+  it('deletes a saved project', async () => {
+    await useEditorStore.getState().save();
+    const id = useEditorStore.getState().project.id;
+
+    await useEditorStore.getState().removeDocument(id);
+
+    expect(useEditorStore.getState().library).toEqual([]);
+    expect(await loadProject(id)).toBeUndefined();
+  });
+
+  it('autosaves only while the document is dirty and autosave is on', async () => {
+    useEditorStore.getState().updateEntityName('drone', 'Orb warden');
+    expect(useEditorStore.getState().dirty).toBe(true);
+
+    await useEditorStore.getState().autosaveNow();
+    expect(useEditorStore.getState().dirty).toBe(false);
+    expect(useEditorStore.getState().lastAutosaveAt).not.toBeNull();
+    expect(await loadProject(useEditorStore.getState().project.id)).toBeDefined();
+
+    // Nothing to write: nothing is written, so the timestamp stays put.
+    const stamp = useEditorStore.getState().lastAutosaveAt;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await useEditorStore.getState().autosaveNow();
+    expect(useEditorStore.getState().lastAutosaveAt).toBe(stamp);
+
+    // Switched off, saving is left to the user.
+    useEditorStore.getState().updateEntityName('drone', 'Another name');
+    useEditorStore.getState().setAutosave(false);
+    await useEditorStore.getState().autosaveNow();
+    expect(useEditorStore.getState().dirty).toBe(true);
+    expect(useEditorStore.getState().lastAutosaveAt).toBe(stamp);
+  });
+});
+
+describe('project timestamps', () => {
+  it('formats recent saves in words and older ones as a date', async () => {
+    const { relativeTime } = await import('./ProjectBrowser');
+    const now = Date.UTC(2026, 0, 2, 12, 0, 0);
+    expect(relativeTime(now - 5_000, now)).toBe('just now');
+    expect(relativeTime(now - 5 * 60_000, now)).toBe('5 min ago');
+    expect(relativeTime(now - 3 * 3_600_000, now)).toBe('3 h ago');
+    expect(relativeTime(now - 5 * 86_400_000, now)).toMatch(/\d/);
   });
 });

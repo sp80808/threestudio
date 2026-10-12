@@ -18,10 +18,10 @@ walk onto the plate, the door slides open; collect three gems and the portal app
 | Variables | Numbers, switches and text shared by behaviours and rules, with live play values |
 | Play mode | Fixed-step simulation, isolated from the document, with HUD, pause and single-step |
 | Physics | Kinematic collision (solid volumes + triggers) — deterministic, no dependencies |
-| Persistence | IndexedDB save/load, JSON import/export with v1→v2 migration |
+| Persistence | IndexedDB library (open, save a copy, delete), autosave, JSON import/export with v1→v2 migration |
 | Record & replay | Record a play session's input in the editor and replay it headlessly, frame for frame |
 | Playtesting | `npm run playtest` drives a scene headlessly with a scripted pilot and prints a timeline + pass/fail report |
-| Quality gates | `npm run lint` (strict TS), `npm test` (119 tests incl. acceptance play-throughs, record/replay and jsdom panel mounts), `npm run playtest`, `npm run build` |
+| Quality gates | `npm run lint` (strict TS), `npm test` (133 tests incl. acceptance play-throughs, record/replay and jsdom panel mounts), `npm run playtest`, `npm run build` |
 
 The engine core (`src/runtime/`) is free of React and Three.js: it is a pure TypeScript
 simulation that can run headlessly, in a worker, or inside tests.

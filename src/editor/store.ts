@@ -25,11 +25,18 @@ import {
   type Variable,
 } from '../simulation/schema';
 import { createPressurePlateDoorScene, createSceneTemplate } from '../simulation/scenarios';
-import { loadProject, saveProject } from '../persistence/db';
+import { deleteProject, listProjects, loadProject, saveProject } from '../persistence/db';
 
 const HISTORY_LIMIT = 80;
 
 export type TransformMode = 'translate' | 'rotate' | 'scale';
+
+/** A saved project as the library lists it (no document payload). */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  updatedAt: number;
+}
 export type TransformSpace = 'local' | 'world';
 
 interface EditorState {
@@ -42,6 +49,11 @@ interface EditorState {
   future: Project[];
   dirty: boolean;
   lastSavedAt: number | null;
+  /** Saved projects in this browser, newest first. */
+  library: ProjectSummary[];
+  /** Saves the document automatically a moment after editing stops. */
+  autosave: boolean;
+  lastAutosaveAt: number | null;
 
   selectEntity: (id: string | null) => void;
   setTransformMode: (mode: TransformMode) => void;
@@ -89,6 +101,17 @@ interface EditorState {
 
   save: () => Promise<void>;
   load: (id: string) => Promise<void>;
+
+  /** Re-reads the list of saved projects. */
+  refreshLibrary: () => Promise<void>;
+  /** Saves the current document under a new name/id and opens it. */
+  saveAs: (name: string) => Promise<void>;
+  /** Loads a saved project by id (an alias of `load` that also refreshes). */
+  openDocument: (id: string) => Promise<void>;
+  removeDocument: (id: string) => Promise<void>;
+  setAutosave: (enabled: boolean) => void;
+  /** Called by the autosave timer; a no-op when nothing changed. */
+  autosaveNow: () => Promise<void>;
 }
 
 type Commit = (mutate: (project: Project) => Project) => void;
@@ -125,6 +148,9 @@ export const useEditorStore = create<EditorState>((set, get) => {
     transformSpace: 'local',
     past: [],
     future: [],
+    library: [],
+    autosave: true,
+    lastAutosaveAt: null,
     dirty: false,
     lastSavedAt: null,
 
@@ -394,6 +420,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const { project } = get();
       await saveProject(project);
       set({ dirty: false, lastSavedAt: Date.now() });
+      await get().refreshLibrary();
     },
 
     load: async (id) => {
@@ -407,9 +434,68 @@ export const useEditorStore = create<EditorState>((set, get) => {
         dirty: false,
         lastSavedAt: Date.now(),
       });
+      await get().refreshLibrary();
+    },
+
+    refreshLibrary: async () => {
+      try {
+        set({ library: await listProjects() });
+      } catch (error) {
+        // Private-mode browsers can refuse IndexedDB; the editor keeps working,
+        // it just cannot list what was saved.
+        console.warn('Could not read the project library', error);
+        set({ library: [] });
+      }
+    },
+
+    saveAs: async (name) => {
+      const current = get().project;
+      const project: Project = {
+        ...current,
+        id: createProjectId(),
+        name: name.trim() || current.name || 'Untitled project',
+      };
+      await saveProject(project);
+      set({
+        project,
+        dirty: false,
+        lastSavedAt: Date.now(),
+        // A new document is a new branch of history, not a redo of the old one.
+        past: [],
+        future: [],
+      });
+      await get().refreshLibrary();
+    },
+
+    openDocument: async (id) => {
+      await get().load(id);
+    },
+
+    removeDocument: async (id) => {
+      await deleteProject(id);
+      await get().refreshLibrary();
+    },
+
+    setAutosave: (enabled) => set({ autosave: enabled }),
+
+    autosaveNow: async () => {
+      const { dirty, autosave, project } = get();
+      if (!dirty || !autosave) return;
+      await saveProject(project);
+      set({ dirty: false, lastSavedAt: Date.now(), lastAutosaveAt: Date.now() });
+      await get().refreshLibrary();
     },
   };
 });
+
+/** Id for a newly forked document. */
+function createProjectId(): string {
+  const uuid =
+    typeof globalThis.crypto?.randomUUID === 'function'
+      ? globalThis.crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  return `project-${uuid.slice(0, 8)}`;
+}
 
 export function selectSelectedEntity(state: EditorState): Entity | null {
   return state.selectedEntityId ? state.project.entities[state.selectedEntityId] ?? null : null;

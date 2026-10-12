@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import 'fake-indexeddb/auto';
 /**
  * @license SPDX-License-Identifier: Apache-2.0
  *
@@ -16,11 +17,13 @@ import { type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProject, createEntity, createVariable, type Project } from '../simulation/schema';
+import { db, saveProject } from '../persistence/db';
 import { createPlaygroundScene, createPressurePlateDoorScene } from '../simulation/scenarios';
 import { createBehaviourInstance } from '../runtime/behaviours';
 import PlayHud from '../render/PlayHud';
 import { PLAY_EVENTS, usePlayStore } from './playStore';
 import Hierarchy from './Hierarchy';
+import ProjectBrowser from './ProjectBrowser';
 import Inspector from './Inspector';
 import StatusBar from './StatusBar';
 import TopBar from './TopBar';
@@ -104,6 +107,7 @@ beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   loadProject(createPressurePlateDoorScene());
   usePlayStore.setState({ status: 'stopped', stats: null, variables: [], diagnostics: [], recording: false, recordedFrames: 0 });
+  useEditorStore.setState({ library: [], autosave: true, lastAutosaveAt: null });
 });
 
 afterEach(() => {
@@ -214,6 +218,79 @@ describe('editor panels', () => {
     click(rowFor('Door sign') ?? null);
     const select = container.querySelector('select') as HTMLSelectElement;
     expect(select.value).toBe('door-main');
+  });
+
+  it('opens the saved-project browser from the toolbar', () => {
+    mount(panels);
+
+    const listener = vi.fn();
+    window.addEventListener('open-project-browser', listener);
+    const projectsButton = [...container.querySelectorAll('button')].find((button) =>
+      button.getAttribute('title')?.startsWith('Saved projects'),
+    );
+    click(projectsButton ?? null);
+    window.removeEventListener('open-project-browser', listener);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists saved projects, opens one and saves a copy', async () => {
+    await db.documents.clear();
+    await db.projects.clear();
+    const saved = createPlaygroundScene();
+    await saveProject({ ...saved, id: 'library-playground', name: 'Library playground' });
+    loadProject(createPressurePlateDoorScene());
+
+    const closed = vi.fn();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    act(() => {
+      root = createRoot(container);
+      root.render(<ProjectBrowser onClose={closed} />);
+    });
+
+    await act(async () => {
+      // Let the panel finish reading the library.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toContain('Library playground');
+    expect(text()).toContain('Saved projects');
+    // The open document is marked, and the panel starts on a copy name.
+    expect(text()).toContain('open');
+    expect(inputValues()).toContain('Pressure Plate Door copy');
+
+    const openButton = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Open'),
+    );
+    await act(async () => {
+      openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(useEditorStore.getState().project.id).toBe('library-playground');
+    expect(closed).toHaveBeenCalled();
+
+    // Saving a copy adds a second document without changing the original.
+    const copyInput = findInput('Pressure Plate Door copy');
+    setInputValue(copyInput, 'Training level');
+    const saveAsButton = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Save as'),
+    );
+    await act(async () => {
+      saveAsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      // IndexedDB round trips are real tasks, not just microtasks.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(useEditorStore.getState().project.name).toBe('Training level');
+    expect(useEditorStore.getState().library.map((entry) => entry.name).sort()).toEqual([
+      'Library playground',
+      'Training level',
+    ]);
   });
 
   it('offers record and download controls in play mode', () => {

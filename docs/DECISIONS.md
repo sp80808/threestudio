@@ -106,3 +106,15 @@ reports overlaps where the player sees it.
 - Broken documents (a parent cycle, a parent that was deleted) become a single `hierarchy`
   diagnostic and the object keeps its own transform: a mistake in the hierarchy is visible,
   not fatal, and can never hang a frame.
+
+## 14. The Browser Is the Server
+**Decision**: the project library is IndexedDB plus a modal panel — open, save a copy, delete,
+autosave — with JSON export as the escape hatch, and no account, sync or backend.
+**Reasoning**: the editor is local-first, so the "cloud" it needs is a list of documents and a
+way to fork one. IndexedDB already stores the document; the work was the operations (a copy
+gets a new id and a fresh history stack, deleting asks first, autosave writes a moment after
+editing stops) and being honest about the state in the UI: the status bar shows the last
+autosave, the toolbar can switch autosave off, and a dirty document warns before the tab
+closes. `fake-indexeddb` makes all of it testable in Node.
+**Trade-off**: nothing leaves the machine, so sharing means exporting JSON. That is the right
+default until import/export formats settle (see decision 3, which keeps the document portable).

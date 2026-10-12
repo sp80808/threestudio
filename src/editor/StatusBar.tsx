@@ -14,6 +14,8 @@ export default function StatusBar() {
   const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
   const dirty = useEditorStore((state) => state.dirty);
   const transformMode = useEditorStore((state) => state.transformMode);
+  const autosave = useEditorStore((state) => state.autosave);
+  const lastAutosaveAt = useEditorStore((state) => state.lastAutosaveAt);
   const status = usePlayStore((state) => state.status);
   const stats = usePlayStore((state) => state.stats);
 
@@ -26,6 +28,13 @@ export default function StatusBar() {
           {dirty ? '● Unsaved' : '● Saved'}
         </span>
         <span>{summariseProject(project)}</span>
+        <span className={cn(lastAutosaveAt && autosave ? 'text-zinc-500' : 'text-zinc-600')}>
+          {autosave
+            ? lastAutosaveAt
+              ? `Autosaved ${new Date(lastAutosaveAt).toLocaleTimeString()}`
+              : 'Autosave on'
+            : 'Autosave off'}
+        </span>
         {selected ? (
           <span className="text-zinc-400">
             Selected: <span className="text-zinc-200">{selected.name}</span>

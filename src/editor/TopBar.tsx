@@ -61,7 +61,8 @@ export default function TopBar() {
   const undo = useEditorStore((state) => state.undo);
   const redo = useEditorStore((state) => state.redo);
   const save = useEditorStore((state) => state.save);
-  const load = useEditorStore((state) => state.load);
+  const autosave = useEditorStore((state) => state.autosave);
+  const setAutosave = useEditorStore((state) => state.setAutosave);
   const newProject = useEditorStore((state) => state.newProject);
   const loadTemplate = useEditorStore((state) => state.loadTemplate);
   const replaceProject = useEditorStore((state) => state.replaceProject);
@@ -142,7 +143,11 @@ export default function TopBar() {
         <button onClick={() => void save()} className={buttonClass} title="Save to this browser">
           <Save size={16} />
         </button>
-        <button onClick={() => void load(project.id)} className={buttonClass} title="Load the saved version">
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent('open-project-browser'))}
+          className={buttonClass}
+          title="Saved projects (open, save a copy, delete)"
+        >
           <FolderOpen size={16} />
         </button>
         <button onClick={handleExportJson} className={buttonClass} title="Export project as JSON">
@@ -183,6 +188,16 @@ export default function TopBar() {
         <span className="ml-2 text-[10px] text-zinc-600">
           {dirty ? 'Unsaved changes' : lastSavedAt ? `Saved ${new Date(lastSavedAt).toLocaleTimeString()}` : 'Not saved yet'}
         </span>
+        <button
+          onClick={() => setAutosave(!autosave)}
+          title={autosave ? 'Autosave is on — click to switch it off' : 'Autosave is off — click to switch it on'}
+          className={cn(
+            'ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+            autosave ? 'bg-emerald-950/70 text-emerald-300' : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200',
+          )}
+        >
+          autosave {autosave ? 'on' : 'off'}
+        </button>
       </div>
 
       {/* Play controls */}

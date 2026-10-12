@@ -20,6 +20,10 @@
 - **Undo/redo** uses capped document snapshots. Transforms are committed once per drag, so
   snapshots stay cheap and *every* edit — entity, component, behaviour, rule, variable or
   setting — is undoable without per-action bookkeeping.
+- **Project library**: `persistence/db.ts` owns the IndexedDB schema (records carry name and
+  `updatedAt` next to the document), while `editor/store.ts` exposes the operations the UI
+  needs (`save`, `saveAs`, `openDocument`, `removeDocument`, `refreshLibrary`, `autosaveNow`).
+  Timers live in the shell (`App.tsx`), not in the store, so state stays easy to test.
 - **Play state** (`editor/playStore.ts`) is a separate store holding the runtime snapshot
   (status, statistics, live variables, diagnostics). Commands travel as window events so the
   viewport stays the single owner of the `World` instance.

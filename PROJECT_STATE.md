@@ -69,13 +69,23 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
   values, collider editor with world-size read-out, hierarchy with search/hide/duplicate.
 - `scene-builder`, `playStore`, `viewStore`, `StatusBar`, template picker, JSON import/export.
 
+**Project library (`src/editor/ProjectBrowser.tsx`, `src/persistence/db.ts`)**
+- The toolbar's folder button opens a browser of the documents saved in this browser:
+  open, save a copy under a new name, delete (with confirmation), and see when each was
+  saved. Opening a project resets history, selection and the dirty flag.
+- Autosave writes the open document to IndexedDB ~2.5 s after editing stops, can be switched
+  off from the toolbar, and the status bar shows the last autosave time. A dirty document also
+  warns before the tab is closed.
+- Every document is still exportable as JSON; nothing here needs an account or a server.
+
 **Persistence and quality**
 - `persistence/db.ts`: IndexedDB (Dexie v2 schema with an upgrade path), save/load/list.
 - `persistence/io.ts`: JSON export/import, v1→v2 migration, validation, normalisation.
 - TypeScript `strict` enabled; `@types/react`/`@types/react-dom` added.
-- 119 tests (`npm test`): runtime unit suites (record/replay determinism, hierarchy
+- 133 tests (`npm test`): runtime unit suites (record/replay determinism, hierarchy
   composition and world-space collision), a full play-through of the acceptance scenario,
-  jsdom mounts of the editor panels (`src/editor/app.test.tsx`) and of the runner itself
+  the project library (IndexedDB round trips via `fake-indexeddb`), jsdom mounts of the
+  editor panels (`src/editor/app.test.tsx`) and of the runner itself
   (`src/runtime/playtest.test.ts`).
 - `tools/playtest.ts` (`npm run playtest`): headless playtest runner with a scripted pilot, a
   timeline of world changes and a pass/fail report (18 checks on the acceptance scene). It also
@@ -86,4 +96,4 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 - Rapier-backed physics behind the existing `resolveMovement` / `WorldAccess` contract.
 - Balance regression runs: record a session per level and diff `npm run playtest` reports in CI.
 - Asset import pipeline (glTF/GLB in): the GLB export button is wired, the reverse is not.
-- Project browser UI on top of `listProjects()`, plus autosave.
+- Asset import pipeline (glTF/GLB in) so imported models can join scenes.
