@@ -28,6 +28,6 @@ jobs:
       - name: Unit tests
         run: npm test
       - name: Playtests
-        run: npm run playtest
+        run: npm run playtest -- --all --quiet --no-timeline
       - name: Production build
         run: npm run build

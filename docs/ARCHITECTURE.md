@@ -96,6 +96,28 @@ Guarantees:
   the hierarchy with it. Editor gizmos then operate in the child's local space, which is what
   makes moving a child feel like moving it *inside* its parent.
 
+## Collisions at Scale
+
+- `src/runtime/broadphase.ts` answers one question: *which pairs of colliders could be
+  overlapping?* It buckets every collider's world AABB into a uniform grid (default cell 4 m)
+  and returns the pairs that share a cell, plus everything that touches a volume too large to
+  bucket (a floor, for instance). Scenes below `BRUTE_FORCE_PAIR_LIMIT` pairs skip the grid
+  and are tested directly — for a small scene the grid would only add work.
+- The contract is deliberately one-sided: the candidate list must be a **superset** of the real
+  overlaps, never a subset. `broadphase.test.ts` checks that against brute force on random
+  scenes, and against a 400 m floor, because a missed pair would be a dropped trigger event —
+  the sort of bug that shows up as "the door didn't open" three weeks later.
+- Candidates come back ordered by `entity.order`, so the pair walk is deterministic and a step
+  is reproducible from its seed (record & replay depends on it).
+- Enter events are found from the candidates; exit events are found by re-testing the overlaps
+  recorded in the previous step, because a pair that stopped overlapping is by definition no
+  longer a candidate. Nothing else about triggers, solid volumes or `resolveMovement` changes:
+  the broad phase only decides *which* pairs get the exact test.
+- The engine reports the cost: `WorldStats.overlapTests` counts the narrow-phase tests per
+  step, and the play HUD prints it next to the object count. The **Object Crowd** template
+  (`createCrowdScene`) exists to make that number meaningful — 325 objects, where brute force
+  would be 51,681 tests per step and the grid hands over roughly 460.
+
 ## Testing
 
 - Unit tests per runtime module (`src/runtime/*.test.ts`).
@@ -114,5 +136,8 @@ Guarantees:
   edits made through the UI reach the store.
 - `tools/playtest.ts` (`npm run playtest`) plays a scene headlessly with a scripted pilot and
   prints a timeline plus a pass/fail report; it exits non-zero on failure, so CI runs it after
-  the unit tests. `--document <file.json>` plays any exported document instead of a built-in
-  scene.
+  the unit tests. `--all` plays every registered scenario (CI uses this, so a template cannot
+  rot unnoticed), and `--document <file.json>` plays any exported document instead of a
+  built-in scene.
+- Every shipped template is also a unit-test fixture: `scenario.test.ts` validates each one as
+  a document and asserts the crowd scene's step cost stays far below brute force.

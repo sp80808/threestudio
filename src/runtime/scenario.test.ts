@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { ProjectSchema } from '../simulation/schema';
 import {
   SCENE_TEMPLATES,
+  createCrowdScene,
   createPlaygroundScene,
   createPressurePlateDoorScene,
   createSceneTemplate,
 } from '../simulation/scenarios';
+import { bruteForcePairCount } from './broadphase';
 import { createHarness } from './testHarness';
 
 /**
@@ -165,5 +167,35 @@ describe('Playground scene', () => {
     harness.run(1);
 
     expect(harness.entity('player').position[1]).toBeCloseTo(0.85, 2);
+  });
+});
+
+describe('Object Crowd scene', () => {
+  it('is big enough for the broad phase to matter', () => {
+    const project = createCrowdScene();
+    const colliders = Object.values(project.entities).filter(
+      (entity) => entity.components.collider,
+    ).length;
+
+    // Brute force would be n²/2; if that stops dwarfing the grid, this scene no
+    // longer demonstrates anything.
+    expect(bruteForcePairCount(colliders)).toBeGreaterThan(10_000);
+  });
+
+  it('hands the narrow phase a small share of the pairs it steps', () => {
+    const harness = createHarness(createCrowdScene());
+    const colliders = harness.world.getEntities().filter((entity) => entity.collider).length;
+
+    // Walk along a lane: the crowd is static, so nothing else moves.
+    harness.run(2);
+    let tested = 0;
+    for (let step = 0; step < 60; step += 1) {
+      harness.step();
+      tested = Math.max(tested, harness.world.getStats().overlapTests);
+    }
+
+    expect(tested).toBeGreaterThan(0);
+    expect(tested).toBeLessThan(bruteForcePairCount(colliders) / 8);
+    expect(harness.world.getDiagnostics()).toEqual([]);
   });
 });

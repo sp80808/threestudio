@@ -24,8 +24,14 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseProject } from '../src/persistence/io';
 import { parseRecording, serializeRecording } from '../src/persistence/recording';
-import { createPlaygroundScene, createPressurePlateDoorScene, createSceneTemplate } from '../src/simulation/scenarios';
+import {
+  createCrowdScene,
+  createPlaygroundScene,
+  createPressurePlateDoorScene,
+  createSceneTemplate,
+} from '../src/simulation/scenarios';
 import type { Project, Vec3 } from '../src/simulation/schema';
+import { bruteForcePairCount } from '../src/runtime/broadphase';
 import { createEmptyRecording, type Recording } from '../src/runtime/replay';
 import {
   createHarness,
@@ -529,7 +535,61 @@ const PLAYGROUND_PLAYTEST: Playtest = {
   },
 };
 
-export const PLAYTEST_REGISTRY: Playtest[] = [PRESSURE_PLATE_DOOR_PLAYTEST, PLAYGROUND_PLAYTEST];
+const CROWD_PLAYTEST: Playtest = {
+  id: 'crowd',
+  title: 'Object Crowd',
+  description: '300+ colliders: proves the broad phase keeps a step cheap.',
+  create: () => createCrowdScene(),
+  play: (source, recorder) => {
+    const harness = source as Harness;
+    const pilot = createPilot(recorder, harness.input);
+    const collidables = harness.world.getEntities().filter((entity) => entity.collider).length;
+    recorder.note(`walking through a scene with ${collidables} colliders`);
+
+    // The pilot stays on the near side of the door: the shut door is a solid
+    // wall, and only the plate — which the pilot must step off to leave — opens it.
+    pilot.walkTo([1.6, 4.6], { maxSeconds: 6 });
+    recorder.run(0.6);
+    recorder.check(
+      'the acceptance scenario still works in a crowded scene',
+      harness.entity('door-main').position[1] > 3,
+      `door y = ${harness.entity('door-main').position[1].toFixed(2)} while standing on the plate`,
+    );
+
+    pilot.walkTo([0, 15], { maxSeconds: 8 });
+    pilot.walkTo([0, 3.5], { maxSeconds: 8 });
+
+    const stats = harness.world.getStats();
+    const withoutBroadPhase = bruteForcePairCount(collidables);
+    recorder.check(
+      'the scene really is big enough to matter',
+      collidables > 100,
+      `${collidables} colliders in the scene`,
+    );
+    recorder.check(
+      'the step tests far fewer pairs than brute force',
+      stats.overlapTests > 0 && stats.overlapTests < withoutBroadPhase / 8,
+      `${stats.overlapTests} pair tests vs ${withoutBroadPhase} pairwise`,
+    );
+    recorder.check(
+      'every object is still in the simulation',
+      stats.entityCount === harness.world.getEntities().length,
+      `${stats.entityCount} objects`,
+    );
+    const pads = harness.world.getVariables()['Pads hit'];
+    recorder.check(
+      'triggers still fire in a crowded scene',
+      Number(pads ?? 0) > 0,
+      `Pads hit = ${String(pads)}`,
+    );
+  },
+};
+
+export const PLAYTEST_REGISTRY: Playtest[] = [
+  PRESSURE_PLATE_DOOR_PLAYTEST,
+  PLAYGROUND_PLAYTEST,
+  CROWD_PLAYTEST,
+];
 
 /** Wanders around an imported document; only checks that the runtime stays clean. */
 export function createDocumentPlaytest(project: Project, seconds = 15): Playtest {
@@ -755,11 +815,14 @@ function main(): void {
         '',
         'Usage: npm run playtest -- [scenario] [options]',
         '',
+        'Runs one scenario (default: pressure-plate-door) or every scenario with --all.',
+        '',
         'Scenarios:',
         ...PLAYTEST_REGISTRY.map((playtest) => `  ${playtest.id.padEnd(22)} ${playtest.description}`),
         '',
         'Options:',
         '  --list                 list the scenarios and exit',
+        '  --all                  run every scenario (fails if any check fails)',
         '  --document <path>      play an exported .json document instead',
         '  --replay <path>        replay a recorded session (see --document too)',
         '  --save-recording <path>  capture the pilot\'s input to a recording file',
@@ -777,6 +840,32 @@ function main(): void {
     for (const playtest of PLAYTEST_REGISTRY) {
       console.log(`${playtest.id.padEnd(22)} ${playtest.title} — ${playtest.description}`);
     }
+    return;
+  }
+
+  if (has('all') && !valueOf('document') && !valueOf('replay')) {
+    const seed = Number.parseInt(valueOf('seed') ?? '1234', 10) || 1234;
+    const reports = PLAYTEST_REGISTRY.map((playtest) => runPlaytest(playtest, seed));
+
+    if (has('json')) {
+      console.log(JSON.stringify(reports, null, 2));
+    } else {
+      const showTimeline = !(has('quiet') || has('no-timeline'));
+      const timelineFlag = valueOf('timeline');
+      const maxLines = timelineFlag ? Number.parseInt(timelineFlag, 10) || 60 : 60;
+      for (const report of reports) {
+        console.log(`\nThreeStudio playtest — ${report.scenario}`);
+        printReport(report, { timeline: showTimeline, maxLines });
+      }
+      const failed = reports.filter((report) => !report.passed);
+      const checks = reports.reduce((total, report) => total + report.checks.length, 0);
+      console.log(
+        `\n${reports.length - failed.length}/${reports.length} scenarios passed ` +
+          `(${checks} checks)${failed.length > 0 ? `: ${failed.map((report) => report.scenario).join(', ')}` : ''}.`,
+      );
+    }
+
+    if (reports.some((report) => !report.passed)) process.exitCode = 1;
     return;
   }
 

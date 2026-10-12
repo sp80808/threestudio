@@ -130,6 +130,11 @@ export default function PlayHud() {
             {stats?.behaviourUpdates ?? 0} behaviour updates · {stats?.eventsProcessed ?? 0} events ·{' '}
             {stats?.ruleFirings ?? 0} rule firings
           </div>
+          {/* The scene's collision work: the broad phase keeps this far below
+              the number of possible pairs (see src/runtime/broadphase.ts). */}
+          <div className="mt-0.5 font-mono">
+            {stats?.overlapTests ?? 0} collision pair tests · {stats?.entityCount ?? 0} objects
+          </div>
         </div>
       </div>
 

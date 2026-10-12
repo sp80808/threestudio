@@ -19,10 +19,11 @@ walk onto the plate, the door slides open; collect three gems and the portal app
 | Variables | Numbers, switches and text shared by behaviours and rules, with live play values |
 | Play mode | Fixed-step simulation, isolated from the document, with HUD, pause and single-step |
 | Physics | Kinematic collision (solid volumes + triggers) — deterministic, no dependencies |
+| Scale | A broad phase (uniform grid) keeps the overlap step cheap: 325 objects cost ~460 pair tests instead of ~51,000 |
 | Persistence | IndexedDB library (open, save a copy, delete), autosave, JSON import/export, GLB export |
 | Record & replay | Record a play session's input in the editor and replay it headlessly, frame for frame |
-| Playtesting | `npm run playtest` drives a scene headlessly with a scripted pilot and prints a timeline + pass/fail report |
-| Quality gates | `npm run lint` (strict TS), `npm test` (143 tests incl. acceptance play-throughs, record/replay and jsdom panel mounts), `npm run playtest`, `npm run build` |
+| Playtesting | `npm run playtest` drives a scene headlessly with a scripted pilot and prints a timeline + pass/fail report; `--all` runs every shipped scene |
+| Quality gates | `npm run lint` (strict TS), `npm test` (152 tests incl. acceptance play-throughs, record/replay and jsdom panel mounts), `npm run playtest -- --all`, `npm run build` |
 
 The engine core (`src/runtime/`) is free of React and Three.js: it is a pure TypeScript
 simulation that can run headlessly, in a worker, or inside tests.
@@ -42,6 +43,8 @@ clicking — and reports what happened:
 ```
 npm run playtest                          # the Pressure Plate Door acceptance scene
 npm run playtest -- playground            # the sandbox scene
+npm run playtest -- crowd                 # 300+ objects: the broad phase under load
+npm run playtest -- --all                 # every shipped scene (what CI runs)
 npm run playtest -- --list                # available scenes
 npm run playtest -- --document my.json    # play any exported document
 npm run playtest -- --replay session.json # replay a recorded session

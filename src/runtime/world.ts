@@ -17,6 +17,7 @@
 import type { BehaviourValue, Entity, Project, Vec3 } from '../simulation/schema';
 import { getEntities, resolveSettings } from '../simulation/schema';
 import { findPlayer, getBehaviourDefinition, runBehaviourMessage, runBehaviourUpdate } from './behaviours';
+import { findCandidatePairs } from './broadphase';
 import {
   collidersOverlap,
   entityAabb,
@@ -70,6 +71,12 @@ export interface WorldStats {
   ruleFirings: number;
   entityCount: number;
   eventCount: number;
+  /**
+   * Exact pair tests the narrow phase ran in the last step. It is the broad
+   * phase's output size — far below `n²/2` in a big scene (exits are re-tested
+   * separately, and only for pairs already known to overlap).
+   */
+  overlapTests: number;
 }
 
 export type WorldListener<T> = (payload: T) => void;
@@ -334,6 +341,7 @@ export function createWorld(options: WorldOptions): World {
     ruleFirings: 0,
     entityCount: entities.length,
     eventCount: 0,
+    overlapTests: 0,
   };
 
   diagnostics.onReport((diagnostic) => {
@@ -467,65 +475,54 @@ export function createWorld(options: WorldOptions): World {
   // Collision
   // -------------------------------------------------------------------------
 
+  /**
+   * Refreshes the overlap sets and emits trigger-enter / trigger-exit events.
+   *
+   * Enters come from the broad phase (candidate pairs only, so a big scene does
+   * not pay for every pair), exits from the overlaps recorded in the previous
+   * step — a pair that stopped overlapping is no longer a candidate, so the two
+   * directions are found in different ways.
+   */
   function updateOverlaps(): void {
     const collidables = entities.filter((entity) => hasActiveCollider(entity));
+    let pairTests = 0;
 
-    for (let i = 0; i < collidables.length; i += 1) {
-      for (let j = i + 1; j < collidables.length; j += 1) {
-        const a = collidables[i];
-        const b = collidables[j];
-        const overlapping = collidersOverlap(a, b, collisionContext);
-        const hadOverlap = a.overlaps.has(b.id);
+    const candidates = findCandidatePairs(collidables, {
+      context: collisionContext,
+      onPairTested: () => {
+        pairTests += 1;
+      },
+    });
 
-        if (overlapping && !hadOverlap) {
-          a.overlaps.add(b.id);
-          b.overlaps.add(a.id);
-          if (a.collider?.isTrigger) {
-            pushEvent({
-              type: 'trigger-enter',
-              name: null,
-              sourceEntityId: a.id,
-              otherEntityId: b.id,
-              value: null,
-              previousValue: null,
-            });
-          }
-          if (b.collider?.isTrigger) {
-            pushEvent({
-              type: 'trigger-enter',
-              name: null,
-              sourceEntityId: b.id,
-              otherEntityId: a.id,
-              value: null,
-              previousValue: null,
-            });
-          }
-        } else if (!overlapping && hadOverlap) {
-          a.overlaps.delete(b.id);
-          b.overlaps.delete(a.id);
-          if (a.collider?.isTrigger) {
-            pushEvent({
-              type: 'trigger-exit',
-              name: null,
-              sourceEntityId: a.id,
-              otherEntityId: b.id,
-              value: null,
-              previousValue: null,
-            });
-          }
-          if (b.collider?.isTrigger) {
-            pushEvent({
-              type: 'trigger-exit',
-              name: null,
-              sourceEntityId: b.id,
-              otherEntityId: a.id,
-              value: null,
-              previousValue: null,
-            });
-          }
+    for (const { a, b } of candidates) {
+      if (a.overlaps.has(b.id)) continue;
+      if (!collidersOverlap(a, b, collisionContext)) continue;
+
+      a.overlaps.add(b.id);
+      b.overlaps.add(a.id);
+      emitTriggerEvent('trigger-enter', a, b);
+      emitTriggerEvent('trigger-enter', b, a);
+    }
+
+    // Exits: anything still recorded that is no longer true.
+    for (const entity of collidables) {
+      if (entity.overlaps.size === 0) continue;
+      for (const otherId of [...entity.overlaps].sort()) {
+        const other = entityById.get(otherId);
+        const stillOverlapping =
+          other && hasActiveCollider(other) && collidersOverlap(entity, other, collisionContext);
+        if (stillOverlapping) continue;
+
+        entity.overlaps.delete(otherId);
+        other?.overlaps.delete(entity.id);
+        if (other) {
+          emitTriggerEvent('trigger-exit', entity, other);
+          emitTriggerEvent('trigger-exit', other, entity);
         }
       }
     }
+
+    stats.overlapTests = pairTests;
   }
 
   function getBehaviourState(
@@ -543,6 +540,24 @@ export function createWorld(options: WorldOptions): World {
     }
     return state;
   }
+
+  /** A trigger reports what entered or left it; solid volumes stay quiet. */
+  function emitTriggerEvent(
+    type: 'trigger-enter' | 'trigger-exit',
+    trigger: RuntimeEntity,
+    other: RuntimeEntity,
+  ): void {
+    if (!trigger.collider?.isTrigger) return;
+    pushEvent({
+      type,
+      name: null,
+      sourceEntityId: trigger.id,
+      otherEntityId: other.id,
+      value: null,
+      previousValue: null,
+    });
+  }
+
 
   // -------------------------------------------------------------------------
   // Fixed step
@@ -638,6 +653,7 @@ export function createWorld(options: WorldOptions): World {
       ruleFirings: 0,
       entityCount: entities.length,
       eventCount: 0,
+      overlapTests: 0,
     };
     diagnostics.clear();
   }

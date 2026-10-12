@@ -13,8 +13,9 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
   factories (`createEntity`, `createBehaviour`, `createRule`, `createRuleAction`,
   `createRuleCondition`, `createVariable`). No Three.js/React imports, so documents stay
   portable.
-- `scenarios.ts`: two shipped scenes — **Pressure Plate Door** (the acceptance scenario)
-  and **Playground** (pointer clicks, chasing enemy, orbiting props).
+- `scenarios.ts`: three shipped scenes — **Pressure Plate Door** (the acceptance scenario),
+  **Playground** (pointer clicks, chasing enemy, orbiting props) and **Object Crowd**
+  (the same tutorial with 300+ objects around it, to keep the step cost honest).
 
 **Hierarchy (`src/runtime/world.ts`, `src/render/scene-builder.ts`)**
 - Parent/child transforms are composed as `world = parent * local` (TRS, XYZ Euler),
@@ -41,6 +42,12 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
   `$all`), conditions and actions; broken rules become diagnostics, never exceptions.
 - `collision.ts`: kinematic collision — AABB volumes, exact sphere/sphere tests, per-axis
   sub-stepped movement resolution, triggers that report instead of blocking.
+- `broadphase.ts`: a uniform-grid broad phase. `updateOverlaps` tests only the candidate pairs
+  it returns, so a 325-object scene costs ~460 narrow-phase tests per step instead of 51,681
+  (~1.05 ms/step versus ~16 ms measured for the same scene without it). The candidate set is a
+  checked superset of the real overlaps, ordered by `entity.order` so replays stay
+  deterministic; small scenes still use brute force. `WorldStats.overlapTests` and the play HUD
+  report the work.
 - `variables.ts`, `values.ts`, `math.ts`, `state.ts`, `diagnostics.ts`, `input.ts`
   (DOM + scripted input), `types.ts` (runtime contracts), `testHarness.ts`.
 
@@ -92,15 +99,17 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 - `persistence/db.ts`: IndexedDB (Dexie v2 schema with an upgrade path), save/load/list.
 - `persistence/io.ts`: JSON export/import, v1→v2 migration, validation, normalisation.
 - TypeScript `strict` enabled; `@types/react`/`@types/react-dom` added.
-- 133 tests (`npm test`): runtime unit suites (record/replay determinism, hierarchy
-  composition and world-space collision), a full play-through of the acceptance scenario,
-  the project library (IndexedDB round trips via `fake-indexeddb`), jsdom mounts of the
-  editor panels (`src/editor/app.test.tsx`) and of the runner itself
-  (`src/runtime/playtest.test.ts`).
+- 152 tests (`npm test`, 14 files): runtime unit suites (record/replay determinism, hierarchy
+  composition and world-space collision, the broad phase against brute force), full play-throughs
+  of the acceptance scenario and the crowd scene, the project library (IndexedDB round trips via
+  `fake-indexeddb`), jsdom mounts of the editor panels (`src/editor/app.test.tsx`) and of the
+  runner itself (`src/runtime/playtest.test.ts`, which plays every registered scenario).
 - `tools/playtest.ts` (`npm run playtest`): headless playtest runner with a scripted pilot, a
-  timeline of world changes and a pass/fail report (18 checks on the acceptance scene). It also
-  plays any exported document with `--document <file.json>`.
-- `npm run lint`, `npm test`, `npm run playtest` and `npm run build` all pass.
+  timeline of world changes and a pass/fail report. Three scenarios, 32 checks — the door
+  scenario (20 checks), the playground and the crowd scene (pair-test budget, triggers and the
+  door still opening under load). `--all` runs every scenario and is what CI runs; any exported
+  document plays with `--document <file.json>`.
+- `npm run lint`, `npm test`, `npm run playtest -- --all` and `npm run build` all pass.
 
 ### Next Steps
 - Rapier-backed physics behind the existing `resolveMovement` / `WorldAccess` contract.

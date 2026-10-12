@@ -457,6 +457,88 @@ export function createPlaygroundScene(): Project {
   return project;
 }
 
+/** Blocks the crowd scene aims for; enough to dwarf the broad phase's pair limit. */
+export const CROWD_OBJECT_COUNT = 300;
+/** Grid spacing of the crowd blocks, in metres. Crates are 1.4 wide, so lanes are ~1.6. */
+export const CROWD_GRID_STEP = 3;
+/** How far out the crowd grid reaches, in grid cells. */
+export const CROWD_GRID_HALF = 12;
+
+/**
+ * The acceptance scene with a block city dropped around it: hundreds of crates
+ * and trigger pads on a grid, with lanes left clear along both axes so the
+ * player can still walk the tutorial.
+ *
+ * It exists to make the *cost* of a step visible: with this many colliders a
+ * naive all-pairs overlap test is 50,000-odd intersections per step, while the
+ * broad phase hands the narrow phase a few hundred (see
+ * `src/runtime/broadphase.ts`). The play HUD reports the pair count.
+ */
+export function createCrowdScene(count = CROWD_OBJECT_COUNT): Project {
+  const project = createPressurePlateDoorScene();
+  project.id = 'scene-crowd';
+  project.name = `Crowd (${count} objects)`;
+  project.variables = {
+    ...project.variables,
+    pads: createVariable('pads', 'Pads hit', 'number', 0),
+  };
+
+  let index = 0;
+  let placed = 0;
+  for (let x = -CROWD_GRID_HALF; x <= CROWD_GRID_HALF && placed < count; x += 1) {
+    for (let z = -CROWD_GRID_HALF; z <= CROWD_GRID_HALF && placed < count; z += 1) {
+      if (Math.abs(x) <= 1 || Math.abs(z) <= 1) continue; // the lanes
+      const isPad = index % 4 === 0;
+      const entity = createEntity({
+        id: `crowd-${index}`,
+        name: isPad ? `Pad ${index}` : `Crate ${index}`,
+        geometry: 'box',
+        color: isPad ? '#f6ad55' : '#4a5568',
+        position: [x * CROWD_GRID_STEP, isPad ? 0.1 : 0.5, z * CROWD_GRID_STEP],
+        scale: [1.4, isPad ? 0.2 : 1, 1.4],
+        collider: { size: [1, 1, 1], isTrigger: isPad },
+        // A few of them spin, so the scene is not purely static.
+        ...(index % 8 === 0
+          ? { behaviours: [createBehaviourInstance('spin', { axis: 'y', speed: 45 })] }
+          : {}),
+        tags: isPad ? ['pad'] : [],
+      });
+      project.entities[entity.id] = entity;
+      index += 1;
+      placed += 1;
+    }
+  }
+
+  // Triggers down both lanes, so walking the middle still proves the narrow
+  // phase finds the pairs the broad phase hands it.
+  for (let lane = -CROWD_GRID_HALF; lane <= CROWD_GRID_HALF; lane += 2) {
+    const entity = createEntity({
+      id: `lane-pad-${lane}`,
+      name: `Lane pad ${lane}`,
+      geometry: 'box',
+      color: '#f6ad55',
+      position: [0, 0.1, lane * CROWD_GRID_STEP],
+      scale: [2, 0.2, 2],
+      collider: { size: [1, 1, 1], isTrigger: true },
+      tags: ['pad'],
+    });
+    project.entities[entity.id] = entity;
+  }
+
+  // The pads count themselves, so a run has something to prove.
+  project.rules = [
+    ...(project.rules ?? []).filter((rule) => rule.id !== 'scene-gem-hint'),
+    createRule({
+      id: 'crowd-count-pads',
+      name: 'Something enters a pad → count it',
+      event: { type: 'trigger-enter', sourceEntityId: null, name: null, interval: null },
+      actions: [createRuleAction('change-variable', { property: 'pads', value: 1 })],
+    }),
+  ];
+
+  return project;
+}
+
 export const SCENE_TEMPLATES: SceneTemplate[] = [
   {
     id: 'pressure-plate-door',
@@ -469,6 +551,13 @@ export const SCENE_TEMPLATES: SceneTemplate[] = [
     name: 'Playground',
     description: 'Sandbox for pointer clicks, chasing enemies, orbiting props and variables.',
     create: createPlaygroundScene,
+  },
+  {
+    id: 'crowd',
+    name: 'Object Crowd',
+    description:
+      '325 objects in the tutorial scene: a stress test for the broad phase, which the play HUD counts.',
+    create: createCrowdScene,
   },
 ];
 

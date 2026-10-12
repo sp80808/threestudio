@@ -132,3 +132,30 @@ play through the same collision code, and export back out as GLB.
 **Trade-off**: fidelity is lost — meshes become boxes and materials become a colour. That is the
 honest limit of a blockout tool, and the follow-up is an asset store *beside* the document
 (imported meshes referenced by id, packaged on export) if authored models become the main input.
+
+## 16. Overlaps Come From a Broad Phase, Not From Every Pair
+**Decision**: `world.updateOverlaps` no longer walks every pair of colliders. It asks
+`src/runtime/broadphase.ts` for *candidate* pairs — a uniform grid over the colliders' world
+AABBs, with oversized volumes paired against everything — and runs the exact
+`collidersOverlap` test only on those. Scenes small enough that brute force is cheaper than
+building a grid keep using brute force (`BRUTE_FORCE_PAIR_LIMIT`).
+**Reasoning**: the all-pairs loop was the one part of the step that grew quadratically with the
+document, and a browser game loops at 60 Hz inside a frame budget. The acceptance scene never
+noticed; the **Object Crowd** template does — 325 objects mean 51,681 pairwise tests per step
+against ~460 with the grid, measured at ~1.05 ms/step versus ~16 ms/step for the same scene
+without it. The grid costs one pass over the colliders, is dependency-free (no Rapier, no
+spatial hash library) and preserves the property everything else relies on: the world is still
+a pure function of the document, the seed and the input.
+**Consequences**:
+- The contract is a **superset**, checked in `broadphase.test.ts` against brute force on random
+  scenes and against a 400 m floor: a missed pair would silently drop a trigger event, so the
+  test asserts that the candidate set contains every real overlap rather than trusting the maths.
+- Enters and exits are found differently — enters from the candidates, exits by re-testing the
+  overlaps recorded in the previous step — because a pair that stopped overlapping is no longer
+  a candidate. An entity that disappears or loses its collider now also gets its stale overlap
+  entries cleaned up, which the old loop leaked.
+- Candidate order is deterministic (`entity.order`), so record & replay still reproduces a
+  session frame for frame.
+- The cost is visible rather than assumed: `WorldStats.overlapTests` is in the play HUD, the
+  crowd template makes the number meaningful, and the `crowd` playtest fails if the step ever
+  goes back to testing most pairs.
