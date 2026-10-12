@@ -1,4 +1,7 @@
 node_modules/
+
+# npm is used in CI and locally; bun.lock stays the committed lock file.
+package-lock.json
 build/
 dist/
 coverage/

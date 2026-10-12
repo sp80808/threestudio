@@ -1,285 +1,430 @@
+/**
+ * @license SPDX-License-Identifier: Apache-2.0
+ *
+ * The editor viewport.
+ *
+ * Two clearly separated modes:
+ *
+ *  - **Edit mode**: Three.js objects follow the document. Selecting, dragging the
+ *    gizmo and clicking all write back into the store; the simulation is not
+ *    running, so the scene always matches what will be saved.
+ *  - **Play mode**: a `World` is created from a *clone* of the document and owns
+ *    the scene. The viewport only mirrors runtime entity transforms into the
+ *    Three.js objects and forwards input (keys, clicks) into the simulation.
+ *
+ * Because play mode never writes to the document, stopping always restores the
+ * authored scene exactly — the isolation guarantee the architecture doc calls for.
+ */
+
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { resolveSettings, type Entity, type Project } from '../simulation/schema';
+import { createDomInput, type DomInput } from '../runtime/input';
+import { createWorld, type World } from '../runtime/world';
 import { useEditorStore } from '../editor/store';
+import { PLAY_EVENTS, usePlayStore } from '../editor/playStore';
+import { useViewStore } from '../editor/viewStore';
 import {
-  applyRuntimeBehaviours,
-  createRuntimeBehaviourState,
-  RuntimeBehaviourState,
-} from '../runtime/behaviours';
+  applyRenderComponent,
+  createEntityView,
+  disposeObject,
+  type EntityView,
+} from './scene-builder';
+import PlayHud from './PlayHud';
 
-function disposeObject(object: THREE.Object3D): void {
-  object.traverse((child) => {
-    const mesh = child as THREE.Mesh;
-    mesh.geometry?.dispose();
-
-    if (Array.isArray(mesh.material)) {
-      for (const material of mesh.material) material.dispose();
-    } else {
-      mesh.material?.dispose();
-    }
-  });
-}
-
-function applyEntityTransform(object: THREE.Object3D, entity: ReturnType<typeof useEditorStore.getState>['project']['entities'][string]): void {
-  object.position.set(
-    entity.transform.position[0],
-    entity.transform.position[1],
-    entity.transform.position[2],
-  );
-  object.rotation.set(
-    entity.transform.rotation[0],
-    entity.transform.rotation[1],
-    entity.transform.rotation[2],
-    'XYZ',
-  );
-  object.scale.set(
-    entity.transform.scale[0],
-    entity.transform.scale[1],
-    entity.transform.scale[2],
-  );
+function applyEntityTransform(object: THREE.Object3D, entity: Entity): void {
+  const { position, rotation, scale } = entity.transform;
+  object.position.set(position[0], position[1], position[2]);
+  object.rotation.set(rotation[0], rotation[1], rotation[2], 'XYZ');
+  object.scale.set(scale[0], scale[1], scale[2]);
 }
 
 export default function Viewport() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!containerRef.current) return;
-
     const container = containerRef.current;
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    if (!container) return;
+
+    // ---------------------------------------------------------------------
+    // Renderer, scene and camera
+    // ---------------------------------------------------------------------
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setSize(container.clientWidth || 1, container.clientHeight || 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x222222);
+    scene.background = new THREE.Color(0x18181b);
 
     const camera = new THREE.PerspectiveCamera(
       50,
-      container.clientWidth / container.clientHeight,
+      (container.clientWidth || 1) / (container.clientHeight || 1),
       0.1,
-      1000,
+      2000,
     );
-    camera.position.set(5, 5, 5);
+    camera.position.set(8, 9, 14);
 
     const orbit = new OrbitControls(camera, renderer.domElement);
-    const gridHelper = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
-    scene.add(gridHelper);
+    orbit.enableDamping = true;
+    orbit.dampingFactor = 0.12;
+    orbit.maxPolarAngle = Math.PI * 0.495;
+    orbit.target.set(0, 1, 0);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(5, 10, 5);
-    scene.add(directionalLight);
+    const grid = new THREE.GridHelper(60, 60, 0x3f3f46, 0x27272a);
+    grid.position.y = 0;
+    scene.add(grid);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+
+    const hemisphere = new THREE.HemisphereLight(0xbfd4ff, 0x2b2b31, 0.5);
+    scene.add(hemisphere);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 1.1);
+    sun.position.set(10, 18, 8);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.camera.left = -25;
+    sun.shadow.camera.right = 25;
+    sun.shadow.camera.top = 25;
+    sun.shadow.camera.bottom = -25;
+    scene.add(sun);
 
     const transformControl = new TransformControls(camera, renderer.domElement);
+    transformControl.size = 0.9;
     scene.add(transformControl.getHelper());
 
-    const objectMap = new Map<string, THREE.Object3D>();
-    const runtimeStateMap = new Map<string, RuntimeBehaviourState>();
-    const clock = new THREE.Clock();
-    let isPlaying = false;
-    let isInitialSyncDone = false;
+    const selectionHelper = new THREE.BoxHelper(new THREE.Object3D(), 0x60a5fa);
+    selectionHelper.visible = false;
+    scene.add(selectionHelper);
 
-    const restoreEditTransforms = () => {
-      const project = useEditorStore.getState().project;
-      for (const [id, object] of objectMap.entries()) {
-        const entity = project.entities[id];
-        if (entity) applyEntityTransform(object, entity);
+    // ---------------------------------------------------------------------
+    // Document → scene synchronisation
+    // ---------------------------------------------------------------------
+    const views = new Map<string, EntityView>();
+
+    const removeView = (id: string) => {
+      const view = views.get(id);
+      if (!view) return;
+      scene.remove(view.group);
+      disposeObject(view.group);
+      views.delete(id);
+    };
+
+    const syncScene = (project: Project) => {
+      for (const id of [...views.keys()]) {
+        if (!project.entities[id]) removeView(id);
+      }
+
+      for (const entity of Object.values(project.entities)) {
+        let view = views.get(entity.id);
+        if (!view) {
+          view = createEntityView();
+          scene.add(view.group);
+          views.set(entity.id, view);
+        }
+        view.group.name = entity.name;
+        applyRenderComponent(view, entity.components.render, entity.components.collider);
+        if (!world) applyEntityTransform(view.group, entity);
       }
     };
 
-    const announcePlayState = () => {
-      window.dispatchEvent(new CustomEvent('play-mode-state', { detail: { playing: isPlaying } }));
-    };
+    // ---------------------------------------------------------------------
+    // Selection and gizmo
+    // ---------------------------------------------------------------------
+    const syncGizmo = () => {
+      const state = useEditorStore.getState();
+      const selectedId = state.selectedEntityId;
+      const view = selectedId ? views.get(selectedId) : undefined;
+      const hideGizmo = useViewStore.getState().hideGizmo || isPlaying();
 
-    const startPlayMode = () => {
-      if (isPlaying) return;
-      restoreEditTransforms();
-      runtimeStateMap.clear();
-      for (const [id, object] of objectMap.entries()) {
-        runtimeStateMap.set(id, createRuntimeBehaviourState(object));
+      if (view && !isPlaying()) {
+        transformControl.attach(view.group);
+        selectionHelper.setFromObject(view.group);
+        selectionHelper.visible = !hideGizmo;
+      } else {
+        transformControl.detach();
+        selectionHelper.visible = false;
       }
-      transformControl.detach();
-      transformControl.enabled = false;
-      isPlaying = true;
-      clock.start();
-      announcePlayState();
-    };
-
-    const stopPlayMode = () => {
-      if (!isPlaying) return;
-      isPlaying = false;
-      clock.stop();
-      runtimeStateMap.clear();
-      restoreEditTransforms();
-      transformControl.enabled = true;
-
-      const selectedId = useEditorStore.getState().selectedEntityId;
-      const selectedObject = selectedId ? objectMap.get(selectedId) : undefined;
-      if (selectedObject) transformControl.attach(selectedObject);
-      announcePlayState();
     };
 
     transformControl.addEventListener('dragging-changed', (event) => {
-      orbit.enabled = !event.value;
-      if (!event.value && !isPlaying) {
-        const selectedId = useEditorStore.getState().selectedEntityId;
-        const object = selectedId ? objectMap.get(selectedId) : undefined;
-        if (selectedId && object) {
-          useEditorStore.getState().updateEntityTransform(selectedId, {
-            position: [object.position.x, object.position.y, object.position.z],
-            rotation: [object.rotation.x, object.rotation.y, object.rotation.z],
-            scale: [object.scale.x, object.scale.y, object.scale.z],
-          });
-        }
-      }
+      const dragging = (event as unknown as { value: boolean }).value;
+      orbit.enabled = !dragging;
+      if (dragging || world) return;
+
+      const state = useEditorStore.getState();
+      const id = state.selectedEntityId;
+      const view = id ? views.get(id) : undefined;
+      if (!id || !view) return;
+
+      const { position, rotation, scale } = view.group;
+      state.updateEntityTransform(id, {
+        position: [position.x, position.y, position.z],
+        rotation: [rotation.x, rotation.y, rotation.z],
+        scale: [scale.x, scale.y, scale.z],
+      });
     });
 
-    const unsubscribe = useEditorStore.subscribe((state, previousState) => {
-      const currentEntities = state.project.entities;
+    // ---------------------------------------------------------------------
+    // Play mode
+    // ---------------------------------------------------------------------
+    let world: World | null = null;
+    let input: DomInput | null = null;
+    const hudThrottle = { frames: 0 };
+    const isPlaying = () => world !== null;
 
-      for (const [id, object] of objectMap.entries()) {
-        if (!currentEntities[id]) {
-          scene.remove(object);
-          disposeObject(object);
-          objectMap.delete(id);
-          runtimeStateMap.delete(id);
-        }
+    const publishSnapshot = () => {
+      if (!world) {
+        usePlayStore.getState().setSnapshot({
+          status: 'stopped',
+          stats: null,
+          variables: [],
+          diagnostics: [],
+        });
+        return;
       }
-
-      for (const [id, entity] of Object.entries(currentEntities)) {
-        let object = objectMap.get(id);
-
-        if (!object) {
-          object = new THREE.Group();
-          object.name = entity.name;
-
-          if (entity.components.render) {
-            const renderComponent = entity.components.render;
-            let geometry: THREE.BufferGeometry;
-
-            switch (renderComponent.geometry) {
-              case 'sphere':
-                geometry = new THREE.SphereGeometry(0.5, 32, 16);
-                break;
-              case 'cylinder':
-                geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 32);
-                break;
-              case 'plane':
-                geometry = new THREE.PlaneGeometry(1, 1);
-                break;
-              default:
-                geometry = new THREE.BoxGeometry(1, 1, 1);
-            }
-
-            const material = new THREE.MeshStandardMaterial({ color: renderComponent.color });
-            object.add(new THREE.Mesh(geometry, material));
-          }
-
-          scene.add(object);
-          objectMap.set(id, object);
-          if (isPlaying) runtimeStateMap.set(id, createRuntimeBehaviourState(object));
-        }
-
-        object.name = entity.name;
-        if (!isPlaying && orbit.enabled) applyEntityTransform(object, entity);
-      }
-
-      if (!isPlaying && state.selectedEntityId !== previousState.selectedEntityId) {
-        const selectedObject = state.selectedEntityId
-          ? objectMap.get(state.selectedEntityId)
-          : undefined;
-        if (selectedObject) transformControl.attach(selectedObject);
-        else transformControl.detach();
-      } else if (!state.selectedEntityId && isInitialSyncDone) {
-        transformControl.detach();
-      }
-
-      if (state.transformMode !== previousState.transformMode) {
-        transformControl.setMode(state.transformMode);
-      }
-      if (state.transformSpace !== previousState.transformSpace) {
-        transformControl.setSpace(state.transformSpace);
-      }
-      isInitialSyncDone = true;
-    });
-
-    let animationFrameId = 0;
-    const animate = () => {
-      animationFrameId = requestAnimationFrame(animate);
-      const deltaSeconds = Math.min(clock.getDelta(), 0.1);
-
-      if (isPlaying) {
-        const project = useEditorStore.getState().project;
-        for (const [id, object] of objectMap.entries()) {
-          const entity = project.entities[id];
-          const runtimeState = runtimeStateMap.get(id);
-          if (entity && runtimeState) {
-            applyRuntimeBehaviours(entity, object, runtimeState, deltaSeconds);
-          }
-        }
-      }
-
-      orbit.update();
-      renderer.render(scene, camera);
+      usePlayStore.getState().setSnapshot({
+        status: world.isPaused() ? 'paused' : 'playing',
+        stats: world.getStats(),
+        variables: world.getVariableEntries(),
+        diagnostics: world.getDiagnostics().slice(-30).reverse(),
+      });
     };
-    animate();
 
-    const resizeObserver = new ResizeObserver(() => {
-      camera.aspect = container.clientWidth / container.clientHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(container.clientWidth, container.clientHeight);
+    const startPlayMode = () => {
+      if (world) return;
+      const project = useEditorStore.getState().project;
+      if (Object.keys(project.entities).length === 0) return;
+
+      input = createDomInput(renderer.domElement);
+      world = createWorld({ project, input, seed: project.id.length * 7919 + 13 });
+      world.start();
+
+      // Play mode owns the scene: hide editor-only helpers and hand control to
+      // the runtime transforms.
+      grid.visible = false;
+      transformControl.detach();
+      transformControl.enabled = false;
+      selectionHelper.visible = false;
+      for (const view of views.values()) {
+        if (view.colliderHelper) view.colliderHelper.visible = false;
+        view.group.rotation.set(0, 0, 0);
+      }
+
+      publishSnapshot();
+    };
+
+    const syncFromWorld = () => {
+      if (!world) return;
+
+      for (const [id, view] of views) {
+        const entity = world.getEntity(id);
+        if (!entity) {
+          view.group.visible = false;
+          continue;
+        }
+        view.group.visible = entity.visible;
+        view.group.position.set(entity.position[0], entity.position[1], entity.position[2]);
+        view.group.rotation.set(entity.rotation[0], entity.rotation[1], entity.rotation[2], 'XYZ');
+        view.group.scale.set(entity.scale[0], entity.scale[1], entity.scale[2]);
+      }
+
+      const settings = resolveSettings(useEditorStore.getState().project);
+      const player = world.getPlayer();
+      if (settings.cameraFollow && player) {
+        // Keep whatever orbit offset the author chose, but follow the player.
+        scratchTarget.set(player.position[0], player.position[1], player.position[2]);
+        scratchShift.copy(scratchTarget).sub(orbit.target).multiplyScalar(0.12);
+        orbit.target.add(scratchShift);
+        camera.position.add(scratchShift);
+      }
+
+      // Camera yaw uses the three.js convention (looking down -Z at yaw 0),
+      // which is what the character behaviour expects for camera-relative input.
+      camera.getWorldDirection(scratchForward);
+      world.setCameraYaw(Math.atan2(-scratchForward.x, -scratchForward.z));
+    };
+
+    const stopPlayMode = () => {
+      if (!world) return;
+      world.dispose();
+      world = null;
+      input?.dispose();
+      input = null;
+
+      grid.visible = useViewStore.getState().showGrid;
+      transformControl.enabled = true;
+      for (const [id, view] of views) {
+        const entity = useEditorStore.getState().project.entities[id];
+        if (entity) {
+          applyEntityTransform(view.group, entity);
+          view.group.visible = entity.components.render?.visible ?? true;
+        }
+        if (view.colliderHelper) view.colliderHelper.visible = useViewStore.getState().showColliders;
+      }
+      syncGizmo();
+      publishSnapshot();
+    };
+
+    const pausePlayMode = () => {
+      if (!world) return;
+      if (world.isPaused()) world.resume();
+      else world.pause();
+      publishSnapshot();
+    };
+
+    const stepPlayMode = () => {
+      if (!world) return;
+      world.pause();
+      world.stepOnce();
+      syncFromWorld();
+      publishSnapshot();
+    };
+
+    // ---------------------------------------------------------------------
+    // Store subscriptions
+    // ---------------------------------------------------------------------
+    const unsubscribeEditor = useEditorStore.subscribe((state, previous) => {
+      if (state.project !== previous.project) {
+        syncScene(state.project);
+        // Structural edits during play are adopted without restarting the session.
+        world?.syncFromProject(state.project);
+        if (!world) syncGizmo();
+      }
+      if (state.selectedEntityId !== previous.selectedEntityId) syncGizmo();
+      if (state.transformMode !== previous.transformMode) transformControl.setMode(state.transformMode);
+      if (state.transformSpace !== previous.transformSpace) transformControl.setSpace(state.transformSpace);
     });
-    resizeObserver.observe(container);
 
+    const unsubscribeView = useViewStore.subscribe((state, previous) => {
+      grid.visible = state.showGrid && !world;
+      if (state.showColliders !== previous.showColliders || state.hideGizmo !== previous.hideGizmo) {
+        for (const view of views.values()) {
+          if (view.colliderHelper) view.colliderHelper.visible = state.showColliders && !world;
+        }
+        syncGizmo();
+      }
+    });
+
+    // Global keyboard shortcuts (editor conveniences, not simulation input).
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      const store = useEditorStore.getState();
+
+      // While the game runs the keyboard belongs to the game, apart from the
+      // transport controls.
+      if (world) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          stopPlayMode();
+        } else if (event.key.toLowerCase() === 'p') {
+          event.preventDefault();
+          pausePlayMode();
+        } else if (event.key === '.' || event.key === ',') {
+          event.preventDefault();
+          stepPlayMode();
+        }
+        return;
+      }
+
+      if (event.key === ' ') {
+        event.preventDefault();
+        startPlayMode();
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) store.redo();
+        else store.undo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        if (store.selectedEntityId) store.duplicateEntity(store.selectedEntityId);
+        return;
+      }
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        if (store.selectedEntityId) store.removeEntity(store.selectedEntityId);
+        return;
+      }
+      if (event.key.toLowerCase() === 'w') store.setTransformMode('translate');
+      if (event.key.toLowerCase() === 'e') store.setTransformMode('rotate');
+      if (event.key.toLowerCase() === 'r') store.setTransformMode('scale');
+      if (event.key.toLowerCase() === 'f') window.dispatchEvent(new CustomEvent('focus-selected'));
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+
+    // ---------------------------------------------------------------------
+    // Pointer interaction (selection in edit mode, clicks in play mode)
+    // ---------------------------------------------------------------------
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const pointerDownPosition = new THREE.Vector2();
+    const pointerDown = new THREE.Vector2();
+    // Reused every frame: the render loop must not allocate.
+    const scratchForward = new THREE.Vector3();
+    const scratchTarget = new THREE.Vector3();
+    const scratchShift = new THREE.Vector3();
 
-    const onPointerDown = (event: PointerEvent) => {
-      pointerDownPosition.set(event.clientX, event.clientY);
-    };
-
-    const onPointerUp = (event: PointerEvent) => {
-      if (isPlaying) return;
-      if (
-        Math.abs(event.clientX - pointerDownPosition.x) > 2 ||
-        Math.abs(event.clientY - pointerDownPosition.y) > 2 ||
-        !orbit.enabled
-      ) return;
-
+    const pickEntity = (event: PointerEvent): { id: string; point: THREE.Vector3 } | null => {
       const rect = container.getBoundingClientRect();
       pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
 
-      const roots = Array.from(objectMap.values());
+      const roots: THREE.Object3D[] = [...views.values()].map((view) => view.group);
       const intersections = raycaster.intersectObjects(roots, true);
-      if (intersections.length === 0) {
-        useEditorStore.getState().selectEntity(null);
+      if (intersections.length === 0) return null;
+
+      let object: THREE.Object3D | null = intersections[0].object;
+      while (object && !roots.includes(object)) object = object.parent;
+      if (!object) return null;
+
+      for (const [id, view] of views) {
+        if (view.group === object) return { id, point: intersections[0].point };
+      }
+      return null;
+    };
+
+    const onPointerDown = (event: PointerEvent) => {
+      pointerDown.set(event.clientX, event.clientY);
+    };
+
+    const onPointerUp = (event: PointerEvent) => {
+      if (Math.abs(event.clientX - pointerDown.x) > 3 || Math.abs(event.clientY - pointerDown.y) > 3) {
+        return;
+      }
+      if (transformControl.dragging) return;
+
+      const hit = pickEntity(event);
+
+      if (world) {
+        // Clicking is gameplay input: the renderer resolves *what* was clicked,
+        // the simulation decides what that means.
+        input?.pushPick(hit?.id ?? null, hit ? [hit.point.x, hit.point.y, hit.point.z] : [0, 0, 0]);
         return;
       }
 
-      let selected: THREE.Object3D | null = intersections[0].object;
-      while (selected && !roots.includes(selected)) selected = selected.parent;
-      if (!selected) return;
-
-      for (const [id, object] of objectMap.entries()) {
-        if (object === selected) {
-          useEditorStore.getState().selectEntity(id);
-          break;
-        }
-      }
+      useEditorStore.getState().selectEntity(hit?.id ?? null);
     };
 
+    // ---------------------------------------------------------------------
+    // Export and view commands
+    // ---------------------------------------------------------------------
     const handleExport = () => {
-      if (isPlaying) stopPlayMode();
+      stopPlayMode();
       const exporter = new GLTFExporter();
       const exportScene = new THREE.Scene();
-      for (const object of objectMap.values()) exportScene.add(object.clone());
+      for (const view of views.values()) exportScene.add(view.group.clone() as THREE.Group);
 
       exporter.parse(
         exportScene,
@@ -288,7 +433,7 @@ export default function Viewport() {
           const url = URL.createObjectURL(blob);
           const anchor = document.createElement('a');
           anchor.href = url;
-          anchor.download = 'scene.glb';
+          anchor.download = `${useEditorStore.getState().project.name || 'scene'}.glb`;
           anchor.click();
           URL.revokeObjectURL(url);
         },
@@ -311,64 +456,122 @@ export default function Viewport() {
 
     const handleFocus = () => {
       const selectedId = useEditorStore.getState().selectedEntityId;
-      const object = selectedId ? objectMap.get(selectedId) : undefined;
-      if (!object) return;
+      const view = selectedId ? views.get(selectedId) : undefined;
+      if (!view) return;
 
-      const bounds = new THREE.Box3().setFromObject(object);
+      const bounds = new THREE.Box3().setFromObject(view.group);
       if (bounds.isEmpty()) return;
 
-      const center = bounds.getCenter(new THREE.Vector3());
+      const centre = bounds.getCenter(new THREE.Vector3());
       const size = bounds.getSize(new THREE.Vector3());
-      const maxDimension = Math.max(size.x, size.y, size.z);
+      const maxDimension = Math.max(size.x, size.y, size.z, 1);
       const fieldOfView = camera.fov * (Math.PI / 180);
-      const distance = Math.max(
-        Math.abs(maxDimension / Math.sin(fieldOfView / 2)),
-        maxDimension * 1.5,
-      );
+      const distance = Math.max(Math.abs(maxDimension / Math.sin(fieldOfView / 2)), maxDimension * 1.6);
 
       const direction = new THREE.Vector3().subVectors(camera.position, orbit.target).normalize();
       if (direction.lengthSq() < 0.01) direction.set(1, 1, 1).normalize();
 
-      orbit.target.copy(center);
-      camera.position.copy(center).add(direction.multiplyScalar(distance));
-      camera.lookAt(center);
+      orbit.target.copy(centre);
+      camera.position.copy(centre).add(direction.multiplyScalar(distance));
+      camera.lookAt(centre);
       camera.updateProjectionMatrix();
       orbit.update();
     };
 
     container.addEventListener('pointerdown', onPointerDown);
     container.addEventListener('pointerup', onPointerUp);
+    renderer.domElement.addEventListener('contextmenu', (event) => event.preventDefault());
     window.addEventListener('export-glb', handleExport);
     window.addEventListener('zoom-in', handleZoomIn);
     window.addEventListener('zoom-out', handleZoomOut);
     window.addEventListener('focus-selected', handleFocus);
-    window.addEventListener('start-play-mode', startPlayMode);
-    window.addEventListener('stop-play-mode', stopPlayMode);
+    window.addEventListener(PLAY_EVENTS.start, startPlayMode);
+    window.addEventListener(PLAY_EVENTS.stop, stopPlayMode);
+    window.addEventListener(PLAY_EVENTS.pause, pausePlayMode);
+    window.addEventListener(PLAY_EVENTS.step, stepPlayMode);
 
-    useEditorStore.setState((state) => ({ ...state }));
-    announcePlayState();
+    // ---------------------------------------------------------------------
+    // Initial sync, render loop, resize
+    // ---------------------------------------------------------------------
+    const initialProject = useEditorStore.getState().project;
+    syncScene(initialProject);
+    transformControl.setMode(useEditorStore.getState().transformMode);
+    transformControl.setSpace(useEditorStore.getState().transformSpace);
+    grid.visible = useViewStore.getState().showGrid;
+    for (const view of views.values()) {
+      if (view.colliderHelper) view.colliderHelper.visible = useViewStore.getState().showColliders;
+    }
+    publishSnapshot();
+
+    const clock = new THREE.Clock();
+    let animationFrame = 0;
+    const animate = () => {
+      animationFrame = requestAnimationFrame(animate);
+      const delta = Math.min(clock.getDelta(), 0.25);
+
+      if (world && !world.isPaused()) {
+        world.step(delta);
+        syncFromWorld();
+
+        hudThrottle.frames += 1;
+        if (hudThrottle.frames >= 6) {
+          hudThrottle.frames = 0;
+          publishSnapshot();
+        }
+      }
+
+      if (!world) {
+        for (const view of views.values()) {
+          if (view.colliderHelper) view.colliderHelper.visible = useViewStore.getState().showColliders;
+        }
+        selectionHelper.visible = transformControl.object !== undefined && !useViewStore.getState().hideGizmo;
+      }
+
+      orbit.update();
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    const resizeObserver = new ResizeObserver(() => {
+      const width = container.clientWidth || 1;
+      const height = container.clientHeight || 1;
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+    });
+    resizeObserver.observe(container);
 
     return () => {
-      if (isPlaying) stopPlayMode();
-      unsubscribe();
-      cancelAnimationFrame(animationFrameId);
-      resizeObserver.disconnect();
+      unsubscribeEditor();
+      unsubscribeView();
+      window.removeEventListener('keydown', onKeyDown);
       container.removeEventListener('pointerdown', onPointerDown);
       container.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('export-glb', handleExport);
       window.removeEventListener('zoom-in', handleZoomIn);
       window.removeEventListener('zoom-out', handleZoomOut);
       window.removeEventListener('focus-selected', handleFocus);
-      window.removeEventListener('start-play-mode', startPlayMode);
-      window.removeEventListener('stop-play-mode', stopPlayMode);
+      window.removeEventListener(PLAY_EVENTS.start, startPlayMode);
+      window.removeEventListener(PLAY_EVENTS.stop, stopPlayMode);
+      window.removeEventListener(PLAY_EVENTS.pause, pausePlayMode);
+      window.removeEventListener(PLAY_EVENTS.step, stepPlayMode);
 
-      for (const object of objectMap.values()) disposeObject(object);
+      cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+      world?.dispose();
+      input?.dispose();
+      for (const view of views.values()) disposeObject(view.group);
       renderer.dispose();
       transformControl.dispose();
       orbit.dispose();
-      container.removeChild(renderer.domElement);
+      if (renderer.domElement.parentElement === container) container.removeChild(renderer.domElement);
     };
   }, []);
 
-  return <div ref={containerRef} className="relative h-full w-full" style={{ outline: 'none' }} />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={containerRef} className="h-full w-full" style={{ outline: 'none' }} />
+      <PlayHud />
+    </div>
+  );
 }

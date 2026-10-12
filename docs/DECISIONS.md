@@ -1,17 +1,77 @@
 # Decisions
 
 ## 1. State vs. Three.js Objects
-**Decision**: Three.js `Object3D` instances are *not* the source of truth. The serializable `Project` state is the source of truth.
-**Reasoning**: Ensures easy serialization, undo/redo functionality, and a clear separation between editing data and rendering visualization.
+**Decision**: Three.js `Object3D` instances are *not* the source of truth. The serialisable
+`Project` state is the source of truth.
+**Reasoning**: Ensures easy serialisation, undo/redo, and a clean separation between editing
+data and rendering visualisation. It is what makes play-mode isolation a one-line guarantee:
+the runtime works on a copy of the document.
 
 ## 2. Editor State Library
-**Decision**: Zustand.
-**Reasoning**: Lightweight, works well outside of React (for command execution), easy to implement history middleware or custom undo/redo logic.
+**Decision**: Zustand, with play state in a separate store.
+**Reasoning**: Lightweight, usable outside React (the command path stays imperative), and it
+keeps "the document I am editing" apart from "the simulation that is running".
 
-## 3. Persistence
-**Decision**: Dexie (IndexedDB).
-**Reasoning**: Local-first as per requirements. Allows saving larger project structures and future asset blobs without hitting `localStorage` limits.
+## 3. Undo/Redo by Document Snapshots
+**Decision**: capped snapshots rather than per-command inverse operations.
+**Reasoning**: Every new editable concept (behaviours, rules, variables, settings) would
+otherwise need a matching inverse command. Snapshots are cheap at this document size, correct
+by construction, and transforms are committed once per drag so drags do not flood the stack.
 
-## 4. UI Framework
+## 4. Persistence
+**Decision**: Dexie (IndexedDB) with a records table (id, name, updatedAt, project) and a
+Dexie schema upgrade that migrates v1 rows.
+**Reasoning**: Local-first as required, large documents and future asset blobs without hitting
+`localStorage` limits, and a real migration example for the "recent projects" feature.
+
+## 5. UI Framework
 **Decision**: Tailwind CSS + generic accessible components.
-**Reasoning**: Native to the environment, fast to iterate, keeps bundle small.
+**Reasoning**: Native to the environment, fast to iterate, keeps the bundle small.
+
+## 6. Runtime Owns Its Own Math and Collision (no engine dependency yet)
+**Decision**: implement the game loop, vectors and kinematic collision in `src/runtime/`
+rather than adopting Rapier or another engine now.
+**Reasoning per the FOSS policy**: the required capability today is deterministic, testable,
+dependency-free movement, triggers and message flow — all of which are ~300 lines and fully
+covered by unit tests. Adopting a rigid-body engine would add a WASM dependency and a second
+source of truth for transforms before the authoring model is proven.
+**Follow-up**: physics is behind `WorldAccess` + `resolveMovement`, so a Rapier adapter can be
+introduced later without gameplay changes; evaluate it when joints, forces or mesh colliders
+are needed. Record the evaluation (licence, maintenance, bundle size) here first.
+
+## 7. Rules Are Executed, Not Interpreted by the UI
+**Decision**: `RuleSchema` is exactly what the runtime executes; the rules panel is a direct
+view of it.
+**Reasoning**: No translation layer means no drift between "what the editor shows" and "what
+the game does", which is the usual failure mode of no-code authoring tools.
+
+## 8. Strict TypeScript
+**Decision**: enable `strict`, `noUnusedLocals`, `noUnusedParameters`, and add
+`@types/react` / `@types/react-dom`.
+**Reasoning**: Without them, JSX was implicitly `any` and discriminated-union narrowing
+silently failed (which hid a real document-import bug). The runtime is safety-critical code
+for the editor's promises, so the compiler should be able to check it.
+
+## 9. Behaviour Types Are Open Strings
+**Decision**: `BehaviourSchema.type` accepts any string; the registry is the source of truth
+and unknown types become diagnostics (the behaviour is disabled for the session).
+**Reasoning**: New behaviours can be added, documented and tested in one place without a
+schema migration, while documents from a newer build degrade visibly instead of crashing.
+
+## 10. Headless Playtests Are a Gate, Not a Debug Script
+**Decision**: keep the scripted play-through of the shipped scenes in `tools/playtest.ts`
+(`npm run playtest`), run it in CI after the unit tests, and assert its report from
+`src/runtime/playtest.test.ts`.
+**Reasoning**: the runtime's contract is gameplay, not function calls. A runner that steers the
+player with the same input interface the keyboard drives, and prints what changed, catches
+regressions that unit tests miss (a door that opens but never closes, a plate that stops
+reporting overlaps) while doubling as the tool an author reaches for when a scene misbehaves.
+It exits non-zero on a failed check or any runtime warning, so it is a hard gate.
+
+## 11. Editor Panels Are Tested by Mounting Them (not by SSR)
+**Decision**: render the editor panels in jsdom with `createRoot` + `act` and drive them with
+real DOM events.
+**Reasoning**: an SSR pass of a Zustand-backed UI repaints nothing — `renderToString` sees the
+store's initial state, so assertions about selection and editing silently passed against the
+wrong panel. Mounting the real components keeps the test honest about what a user sees, and
+lets the tests assert that a UI edit reaches the store.

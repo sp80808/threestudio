@@ -1,24 +1,27 @@
 /**
- * @license
- * SPDX-License-Identifier: Apache-2.0
+ * @license SPDX-License-Identifier: Apache-2.0
+ *
+ * Editor shell: toolbar, hierarchy, viewport, inspector and status bar.
  */
 
 import TopBar from './editor/TopBar';
 import Hierarchy from './editor/Hierarchy';
 import Inspector from './editor/Inspector';
+import StatusBar from './editor/StatusBar';
 import Viewport from './render/Viewport';
 
 export default function App() {
   return (
-    <div className="flex flex-col w-screen h-screen overflow-hidden bg-zinc-950 font-sans text-zinc-300">
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-zinc-950 font-sans text-zinc-300">
       <TopBar />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex min-h-0 flex-1">
         <Hierarchy />
-        <div className="flex-1 relative bg-black">
+        <div className="relative min-w-0 flex-1 bg-black">
           <Viewport />
         </div>
         <Inspector />
       </div>
+      <StatusBar />
     </div>
   );
 }

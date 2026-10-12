@@ -27,5 +27,7 @@ jobs:
         run: npm run lint
       - name: Unit tests
         run: npm test
+      - name: Playtests
+        run: npm run playtest
       - name: Production build
         run: npm run build
