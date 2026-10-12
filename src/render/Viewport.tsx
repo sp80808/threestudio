@@ -30,6 +30,7 @@ import { useEditorStore } from '../editor/store';
 import { PLAY_EVENTS, usePlayStore } from '../editor/playStore';
 import { useViewStore } from '../editor/viewStore';
 import {
+  applyHierarchy,
   applyRenderComponent,
   createEntityView,
   disposeObject,
@@ -114,6 +115,9 @@ export default function Viewport() {
     const removeView = (id: string) => {
       const view = views.get(id);
       if (!view) return;
+      // Children of a removed object are re-parented by `applyHierarchy`; the
+      // group itself is detached first so disposal cannot take them with it.
+      for (const child of [...view.group.children]) scene.add(child);
       scene.remove(view.group);
       disposeObject(view.group);
       views.delete(id);
@@ -128,13 +132,16 @@ export default function Viewport() {
         let view = views.get(entity.id);
         if (!view) {
           view = createEntityView();
-          scene.add(view.group);
           views.set(entity.id, view);
         }
         view.group.name = entity.name;
         applyRenderComponent(view, entity.components.render, entity.components.collider);
         if (!world) applyEntityTransform(view.group, entity);
       }
+
+      // Nest the groups the way the document says, so parented objects are
+      // drawn (and exported) where the runtime collides with them.
+      applyHierarchy(project, views, scene);
     };
 
     // ---------------------------------------------------------------------
@@ -253,8 +260,10 @@ export default function Viewport() {
       const settings = resolveSettings(useEditorStore.getState().project);
       const player = world.getPlayer();
       if (settings.cameraFollow && player) {
-        // Keep whatever orbit offset the author chose, but follow the player.
-        scratchTarget.set(player.position[0], player.position[1], player.position[2]);
+        // Keep whatever orbit offset the author chose, but follow the player —
+        // at its world position, so a parented player tracks correctly.
+        const worldPosition = world.getWorldPosition(player.id);
+        scratchTarget.set(worldPosition[0], worldPosition[1], worldPosition[2]);
         scratchShift.copy(scratchTarget).sub(orbit.target).multiplyScalar(0.12);
         orbit.target.add(scratchShift);
         camera.position.add(scratchShift);

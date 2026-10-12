@@ -72,6 +72,24 @@ Guarantees:
 - **Physics swap**: implement `resolveMovement` and the collision predicates against Rapier
   while keeping `WorldAccess` unchanged; gameplay code does not need to change.
 
+## Hierarchy
+
+- An entity's transform is **local**; `world = parent * local`, composed from TRS with XYZ
+  Euler angles. `src/runtime/math.ts` holds the matrix maths (`affineFromTransform`,
+  `multiplyAffine`, `transformAabb`, `affineToMatrix4Array`) and is verified numerically
+  against Three.js in the runtime tests.
+- `world.ts` composes and memoises world transforms per *read phase*: the cache is dropped at
+  the start of a step, before rules run, after the step, and whenever the world moves an
+  object, because behaviours write local transforms directly. A cycle (or a missing parent)
+  is reported once as a `hierarchy` diagnostic and the object keeps its own transform.
+- Collision takes a `CollisionContext` that answers "where is this object's parent?", so
+  `collision.ts` never needs to know about hierarchies: overlaps, solid volumes and
+  `resolveMovement` all happen in world space.
+- The renderer mirrors the same composition by nesting `Object3D` groups
+  (`applyHierarchy` in `render/scene-builder.ts`), which also means the glTF export carries
+  the hierarchy with it. Editor gizmos then operate in the child's local space, which is what
+  makes moving a child feel like moving it *inside* its parent.
+
 ## Testing
 
 - Unit tests per runtime module (`src/runtime/*.test.ts`).
@@ -83,6 +101,8 @@ Guarantees:
   interface both satisfy, and `makeRuntimeEntity()` for focused tests.
 - Recorded sessions are replayed against a `StepSource`, so anything that can run a world can
   run a recording — the playtest runner and the unit tests use the same path.
+- `src/runtime/hierarchy.test.ts` covers transform composition, world-space collision,
+  camera-facing world positions and broken documents (cycles, missing parents).
 - `src/editor/app.test.tsx` mounts the real editor panels in jsdom to check that any document
   the editor can be handed (empty, unknown behaviour types, freshly imported) renders and that
   edits made through the UI reach the store.

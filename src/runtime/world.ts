@@ -17,7 +17,14 @@
 import type { BehaviourValue, Entity, Project, Vec3 } from '../simulation/schema';
 import { getEntities, resolveSettings } from '../simulation/schema';
 import { findPlayer, getBehaviourDefinition, runBehaviourMessage, runBehaviourUpdate } from './behaviours';
-import { collidersOverlap, hasActiveCollider, isSolidBody, resolveMovement } from './collision';
+import {
+  collidersOverlap,
+  entityAabb,
+  hasActiveCollider,
+  isSolidBody,
+  resolveMovement,
+  type CollisionContext,
+} from './collision';
 import {
   DiagnosticCodes,
   createDiagnosticsSink,
@@ -25,7 +32,14 @@ import {
   type DiagnosticLevel,
   type DiagnosticsSink,
 } from './diagnostics';
-import { cloneVec3 } from './math';
+import {
+  IDENTITY_AFFINE,
+  affineFromTransform,
+  affineToMatrix4Array,
+  cloneVec3,
+  multiplyAffine,
+  type AffineTransform,
+} from './math';
 import { executeRule, type RuleEvaluationContext } from './rules';
 import type {
   BehaviourRuntimeState,
@@ -175,6 +189,130 @@ export function createWorld(options: WorldOptions): World {
     .map((entity, index) => buildRuntimeEntity(entity, index));
   const entityById = new Map(entities.map((entity) => [entity.id, entity]));
 
+  // -------------------------------------------------------------------------
+  // Hierarchy: world transforms
+  //
+  // A child's transform is composed with its parents' (`world = parent * local`).
+  // Results are memoised and invalidated per step, because behaviours write
+  // straight into `entity.position`/`rotation`/`scale` instead of going through
+  // the world.
+  // -------------------------------------------------------------------------
+  const affineCache = new Map<string, AffineTransform>();
+  const cyclesReported = new Set<string>();
+
+  function invalidateWorldTransforms(): void {
+    affineCache.clear();
+  }
+
+  /**
+   * Walks every parent chain once at session start (and after structural edits)
+   * so a broken hierarchy is reported even if nothing happens to ask for a
+   * transform during the session.
+   */
+  function validateHierarchy(): void {
+    for (const entity of entities) {
+      if (!entity.parentId) continue;
+
+      const visited = new Set<string>([entity.id]);
+      let parentId: string | null = entity.parentId;
+      let cycle = false;
+
+      while (parentId) {
+        if (visited.has(parentId)) {
+          cycle = true;
+          break;
+        }
+        if (!entityById.has(parentId)) break;
+        visited.add(parentId);
+        parentId = entityById.get(parentId)?.parentId ?? null;
+      }
+
+      if (cycle) {
+        // One report per broken group, not one per member.
+        let first = true;
+        for (const id of visited) {
+          if (cyclesReported.has(id)) continue;
+          cyclesReported.add(id);
+          if (!first) continue;
+          first = false;
+          diagnostics.report(
+            'warning',
+            DiagnosticCodes.hierarchy,
+            `"${entity.name}" is part of a parent cycle; its transform is used as-is.`,
+            { entityId: entity.id },
+          );
+        }
+      } else if (!entityById.has(entity.parentId)) {
+        if (!cyclesReported.has(entity.id)) {
+          cyclesReported.add(entity.id);
+          diagnostics.report(
+            'warning',
+            DiagnosticCodes.hierarchy,
+            `"${entity.name}" is attached to "${entity.parentId}", which no longer exists.`,
+            { entityId: entity.id },
+          );
+        }
+      }
+    }
+  }
+
+  /** World transform of an entity, composed from its parents. */
+  function getWorldAffine(id: string): AffineTransform {
+    const cached = affineCache.get(id);
+    if (cached) return cached;
+    return composeWorldAffine(id, new Set<string>([id]));
+  }
+
+  /**
+   * Composes `parent * local` down the chain, memoising each level.
+   *
+   * A cycle (or a parent that no longer exists) is reported once per object and
+   * degraded to "use this transform as if it were a root", so a broken document
+   * stays playable instead of hanging the frame.
+   */
+  function composeWorldAffine(id: string, visited: Set<string>): AffineTransform {
+    const cached = affineCache.get(id);
+    if (cached) return cached;
+
+    const entity = entityById.get(id);
+    if (!entity) return IDENTITY_AFFINE;
+
+    const local = affineFromTransform(entity.position, entity.rotation, entity.scale);
+    const parentId = entity.parentId;
+    if (!parentId) {
+      affineCache.set(id, local);
+      return local;
+    }
+
+    if (visited.has(parentId) || !entityById.has(parentId)) {
+      if (!cyclesReported.has(id)) {
+        cyclesReported.add(id);
+        diagnostics.report(
+          'warning',
+          DiagnosticCodes.hierarchy,
+          `"${entity.name}" is its own ancestor or its parent no longer exists; its transform is used as-is.`,
+          { entityId: id },
+        );
+      }
+      affineCache.set(id, local);
+      return local;
+    }
+
+    visited.add(parentId);
+    const composed = multiplyAffine(composeWorldAffine(parentId, visited), local);
+    affineCache.set(id, composed);
+    return composed;
+  }
+
+  /**
+   * Collision resolves in world space, so it asks the world where an entity's
+   * parent is. The entity's own transform is applied by the collision helpers
+   * from its local position and scale.
+   */
+  const collisionContext: CollisionContext = {
+    parentOf: (entity) => (entity.parentId ? getWorldAffine(entity.parentId) : IDENTITY_AFFINE),
+  };
+
   const queue: GameEvent[] = [];
   const firedRules = new Set<string>();
   const intervalTimers = new Map<string, number>();
@@ -244,6 +382,10 @@ export function createWorld(options: WorldOptions): World {
       const event = queue.shift() as GameEvent;
       processed += 1;
       stats.eventsProcessed += 1;
+
+      // The previous event may have moved or re-parented an object; rules read
+      // world transforms, so they must not see a stale composition.
+      invalidateWorldTransforms();
 
       for (const listener of eventListeners) listener(event);
 
@@ -332,7 +474,7 @@ export function createWorld(options: WorldOptions): World {
       for (let j = i + 1; j < collidables.length; j += 1) {
         const a = collidables[i];
         const b = collidables[j];
-        const overlapping = collidersOverlap(a, b);
+        const overlapping = collidersOverlap(a, b, collisionContext);
         const hadOverlap = a.overlaps.has(b.id);
 
         if (overlapping && !hadOverlap) {
@@ -411,6 +553,10 @@ export function createWorld(options: WorldOptions): World {
     stats.time = time;
     stats.steps += 1;
 
+    // World transforms are memoised per read phase: behaviours and rules write
+    // local transforms directly, so a cache that outlives a phase can be stale.
+    invalidateWorldTransforms();
+
     // 1. Pointer picks recorded by the renderer since the previous step.
     const picks: PointerPick[] = input.takePointerPicks();
     for (const pick of picks) {
@@ -456,7 +602,10 @@ export function createWorld(options: WorldOptions): World {
       }
     }
 
-    // 4. Rules react to everything that happened above.
+    // 4. Rules react to everything that happened above. Behaviour code moved
+    // objects without going through the world, so world transforms are dropped
+    // before rules read them.
+    invalidateWorldTransforms();
     drainEvents();
 
     // 5. Interval rules.
@@ -465,6 +614,10 @@ export function createWorld(options: WorldOptions): World {
     // 6. Input edges are cleared once the whole step has been consumed.
     input.endStep();
     stats.entityCount = entities.length;
+
+    // Reads outside the step (tests, tools, the renderer) must see fresh
+    // transforms, so nothing is carried into the next frame.
+    invalidateWorldTransforms();
 
     for (const listener of stepListeners) listener(stats);
   }
@@ -523,6 +676,17 @@ export function createWorld(options: WorldOptions): World {
     getEntities: () => entities,
     getPlayer: () => findPlayer(entities),
     findEntitiesByTag: (tag) => entities.filter((entity) => entity.tags.includes(tag)),
+    getWorldPosition: (id) => {
+      const entity = entityById.get(id);
+      if (!entity) return [0, 0, 0];
+      return getWorldAffine(id).translation;
+    },
+    getWorldMatrix: (id) => (entityById.has(id) ? affineToMatrix4Array(getWorldAffine(id)) : null),
+    getWorldAabb: (id) => {
+      const entity = entityById.get(id);
+      if (!entity) return null;
+      return entityAabb(entity, entity.parentId ? getWorldAffine(entity.parentId) : null);
+    },
     getOverlaps: (entityId) => {
       const entity = entityById.get(entityId);
       if (!entity) return [];
@@ -536,6 +700,7 @@ export function createWorld(options: WorldOptions): World {
     resetEntity: (entityId) => {
       const entity = entityById.get(entityId);
       if (entity) resetEntityRuntime(entity);
+      invalidateWorldTransforms();
     },
     hasVariable: (id) => variables.has(id),
     getVariable: (id) => variables.get(id),
@@ -604,8 +769,9 @@ export function createWorld(options: WorldOptions): World {
     }
 
     const blockers = entities.filter((candidate) => candidate.id !== id && isSolidBody(candidate));
-    const result = resolveMovement(entity, delta, blockers);
+    const result = resolveMovement(entity, delta, blockers, { context: collisionContext });
     entity.position = result.position;
+    invalidateWorldTransforms();
     return result;
   }
 
@@ -636,6 +802,7 @@ export function createWorld(options: WorldOptions): World {
 
     start: () => {
       resetSession();
+      validateHierarchy();
       running = true;
       paused = false;
       // Scene-start and any rules that follow from it run immediately so the
@@ -745,6 +912,7 @@ export function createWorld(options: WorldOptions): World {
           continue;
         }
         existing.name = source.name;
+        existing.parentId = source.parentId ?? null;
         existing.tags = source.tags ?? [];
         existing.render = source.components.render ? { ...source.components.render } : null;
         existing.rules = source.rules ?? [];
@@ -777,6 +945,9 @@ export function createWorld(options: WorldOptions): World {
 
       for (const [index, entity] of entities.entries()) entity.order = index;
       stats.entityCount = entities.length;
+      invalidateWorldTransforms();
+      cyclesReported.clear();
+      validateHierarchy();
     },
 
     onStep: (listener) => {

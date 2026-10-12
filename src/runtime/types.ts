@@ -16,6 +16,7 @@ import type {
   Rule,
   Vec3,
 } from '../simulation/schema';
+import type { Aabb } from './collision';
 import type { DiagnosticLevel } from './diagnostics';
 
 /** Arbitrary per-behaviour-instance scratch data (timers, progress, ...). */
@@ -117,6 +118,15 @@ export interface WorldAccess {
   getEntities(): RuntimeEntity[];
   getPlayer(): RuntimeEntity | undefined;
   findEntitiesByTag(tag: string): RuntimeEntity[];
+  /**
+   * World position after hierarchy composition: the value the player sees, not
+   * the local transform a behaviour writes.
+   */
+  getWorldPosition(id: string): Vec3;
+  /** Column-major 16-element world matrix for `THREE.Matrix4.fromArray`, or null. */
+  getWorldMatrix(id: string): number[] | null;
+  /** World-space volume of an entity's collider (null when it has none). */
+  getWorldAabb(id: string): Aabb | null;
   getOverlaps(entityId: string): string[];
   moveEntity(entityId: string, delta: Vec3): MoveResult;
   setColliderEnabled(entityId: string, enabled: boolean): void;

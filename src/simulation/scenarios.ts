@@ -83,13 +83,16 @@ export function createPressurePlateDoorScene(): Project {
     ],
   });
 
+  // Meshes are unit geometries scaled by the transform, and a collider's size is
+  // also scaled — so the two agree when the scale describes the object.
   const wallLeft = createEntity({
     id: 'wall-left',
     name: 'Wall (left)',
     geometry: 'box',
     color: '#59606d',
     position: [-4, 1.5, 0],
-    collider: { size: [5, 3, 0.6] },
+    scale: [5, 3, 0.6],
+    collider: { size: [1, 1, 1] },
   });
 
   const wallRight = createEntity({
@@ -98,7 +101,8 @@ export function createPressurePlateDoorScene(): Project {
     geometry: 'box',
     color: '#59606d',
     position: [4, 1.5, 0],
-    collider: { size: [5, 3, 0.6] },
+    scale: [5, 3, 0.6],
+    collider: { size: [1, 1, 1] },
   });
 
   const door = createEntity({
@@ -107,7 +111,8 @@ export function createPressurePlateDoorScene(): Project {
     geometry: 'box',
     color: '#c98a2e',
     position: [0, 1.5, 0],
-    collider: { size: [3, 3, 0.4] },
+    scale: [3, 3, 0.4],
+    collider: { size: [1, 1, 1] },
     behaviours: [
       createBehaviourInstance('door', {
         axis: 'y',
@@ -127,9 +132,10 @@ export function createPressurePlateDoorScene(): Project {
     geometry: 'box',
     color: '#3f9e6a',
     position: [1.6, 0.12, 4.6],
+    scale: [2, 0.24, 2],
     // The trigger volume is lifted above the floor: an overlap with the ground
     // would otherwise count as "something is standing on the plate".
-    collider: { size: [2.4, 0.4, 2.4], isTrigger: true, offset: [0, 0.3, 0] },
+    collider: { size: [1, 1, 1], isTrigger: true, offset: [0, 0.3, 0] },
     behaviours: [
       createBehaviourInstance('pressure-plate', {
         targetEntityId: '',
@@ -174,7 +180,8 @@ export function createPressurePlateDoorScene(): Project {
       geometry: 'sphere',
       color: '#e8c547',
       position,
-      collider: { size: [0.9, 0.9, 0.9], isTrigger: true },
+      scale: [0.9, 0.9, 0.9],
+      collider: { size: [1, 1, 1], isTrigger: true },
       behaviours: [
         createBehaviourInstance('collectible', {
           variableId: 'gems',
@@ -187,6 +194,21 @@ export function createPressurePlateDoorScene(): Project {
       ],
     }),
   );
+
+  // Attached to the door, so it slides up with it — the tutorial's example of a
+  // hierarchy. A child inherits its parent's scale, so it is authored in the
+  // door's local units: an offset of 0.45 on Y is 1.35 m of world space for a
+  // door that is 3×3×0.4, and the sign's own scale is divided by the door's.
+  const sign = createEntity({
+    id: 'door-sign',
+    name: 'Door sign',
+    geometry: 'box',
+    color: '#e8e8e8',
+    // world position (0, 2.85, 0.32) and world size 1.6 × 0.5 × 0.1
+    position: [0, 0.45, 0.8],
+    scale: [0.53, 0.17, 0.25],
+    parentId: 'door-main',
+  });
 
   const portal = createEntity({
     id: 'portal',
@@ -211,7 +233,18 @@ export function createPressurePlateDoorScene(): Project {
     ],
   });
 
-  for (const entity of [ground, player, wallLeft, wallRight, door, plate, portal, drone, ...gems]) {
+  for (const entity of [
+    ground,
+    player,
+    wallLeft,
+    wallRight,
+    door,
+    sign,
+    plate,
+    portal,
+    drone,
+    ...gems,
+  ]) {
     project.entities[entity.id] = entity;
   }
 
@@ -300,7 +333,8 @@ export function createPlaygroundScene(): Project {
     geometry: 'box',
     color: '#e2703a',
     position: [-3.5, 0.6, 2],
-    collider: { size: [1.6, 1.2, 1.6] },
+    scale: [1.6, 1.2, 1.6],
+    collider: { size: [1, 1, 1] },
     behaviours: [createBehaviourInstance('bob', { axis: 'y', amplitude: 0.15, frequency: 0.6 })],
     rules: [
       createRule({
@@ -332,7 +366,8 @@ export function createPlaygroundScene(): Project {
     geometry: 'cylinder',
     color: '#4a5568',
     position: [3, 0.5, 0],
-    collider: { size: [1.2, 1, 1.2] },
+    scale: [1.2, 1, 1.2],
+    collider: { size: [1, 1, 1] },
   });
 
   const orbiter = createEntity({
@@ -358,7 +393,8 @@ export function createPlaygroundScene(): Project {
     geometry: 'cone',
     color: '#f56565',
     position: [0, 0.8, -6],
-    collider: { size: [1, 1.6, 1] },
+    scale: [1, 1.6, 1],
+    collider: { size: [1, 1, 1] },
     behaviours: [
       createBehaviourInstance('follow', {
         targetEntityId: 'player',

@@ -35,6 +35,7 @@ export const DiagnosticCodes = {
   eventStorm: 'event-storm',
   stepOverflow: 'step-overflow',
   behaviourError: 'behaviour-error',
+  hierarchy: 'hierarchy',
   ruleError: 'rule-error',
 } as const;
 

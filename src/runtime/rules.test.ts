@@ -68,6 +68,9 @@ function createFakeWorld(initEntities: RuntimeEntityInit[] = []): FakeWorld {
     getEntities: () => entities,
     getPlayer: () => undefined,
     findEntitiesByTag: (tag) => entities.filter((entity) => entity.tags.includes(tag)),
+    getWorldPosition: (id) => entities.find((entity) => entity.id === id)?.position ?? [0, 0, 0],
+    getWorldMatrix: () => null,
+    getWorldAabb: () => null,
     getOverlaps: (id) =>
       [...(entities.find((entity) => entity.id === id)?.overlaps ?? new Set<string>())],
     moveEntity: (id, delta) => {

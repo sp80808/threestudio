@@ -16,6 +16,20 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 - `scenarios.ts`: two shipped scenes — **Pressure Plate Door** (the acceptance scenario)
   and **Playground** (pointer clicks, chasing enemy, orbiting props).
 
+**Hierarchy (`src/runtime/world.ts`, `src/render/scene-builder.ts`)**
+- Parent/child transforms are composed as `world = parent * local` (TRS, XYZ Euler),
+  memoised per read phase and invalidated whenever behaviours, rules or the editor move
+  something — so collision, triggers, camera follow and the glTF export all agree with what
+  the player sees. Children inherit their parent's scale, like Three.js.
+- `CollisionContext` keeps the world-space resolution out of the collision module: the
+  runtime supplies parent transforms, `collision.ts` stays a pure 3D maths module.
+- Broken documents degrade visibly: a parent cycle or a missing parent is reported once as a
+  `hierarchy` diagnostic and the object keeps its own transform, instead of hanging the frame.
+- The editor's "Attached to" picker refuses self/cycle attachments, the hierarchy list nests
+  children under their parents, and the tutorial scene ships a door sign attached to the door.
+- `getWorldPosition` / `getWorldMatrix` / `getWorldAabb` expose world space to behaviours,
+  rules, the renderer and tests.
+
 **Game runtime (`src/runtime/`)**
 - `world.ts`: fixed-step simulation (`stepRate`), lifecycle (`start/pause/resume/step/stop`),
   deterministic iteration and seeded randomness, event queue with an anti-event-storm guard,
@@ -59,9 +73,10 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 - `persistence/db.ts`: IndexedDB (Dexie v2 schema with an upgrade path), save/load/list.
 - `persistence/io.ts`: JSON export/import, v1→v2 migration, validation, normalisation.
 - TypeScript `strict` enabled; `@types/react`/`@types/react-dom` added.
-- 103 tests (`npm test`): runtime unit suites (including record/replay determinism), a full
-  play-through of the acceptance scenario, jsdom mounts of the editor panels
-  (`src/editor/app.test.tsx`) and of the runner itself (`src/runtime/playtest.test.ts`).
+- 119 tests (`npm test`): runtime unit suites (record/replay determinism, hierarchy
+  composition and world-space collision), a full play-through of the acceptance scenario,
+  jsdom mounts of the editor panels (`src/editor/app.test.tsx`) and of the runner itself
+  (`src/runtime/playtest.test.ts`).
 - `tools/playtest.ts` (`npm run playtest`): headless playtest runner with a scripted pilot, a
   timeline of world changes and a pass/fail report (18 checks on the acceptance scene). It also
   plays any exported document with `--document <file.json>`.
@@ -69,7 +84,6 @@ has been replaced by a real simulation runtime plus the authoring UI that drives
 
 ### Next Steps
 - Rapier-backed physics behind the existing `resolveMovement` / `WorldAccess` contract.
-- Hierarchy/parenting in both the renderer and the runtime transform cascade.
 - Balance regression runs: record a session per level and diff `npm run playtest` reports in CI.
 - Asset import pipeline (glTF/GLB in): the GLB export button is wired, the reverse is not.
 - Project browser UI on top of `listProjects()`, plus autosave.

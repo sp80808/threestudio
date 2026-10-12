@@ -28,6 +28,7 @@ export default function Inspector() {
   const selectedEntityId = useEditorStore((state) => state.selectedEntityId);
   const updateEntityTransform = useEditorStore((state) => state.updateEntityTransform);
   const updateEntityName = useEditorStore((state) => state.updateEntityName);
+  const setParent = useEditorStore((state) => state.setParent);
   const updateEntityComponent = useEditorStore((state) => state.updateEntityComponent);
   const removeEntityComponent = useEditorStore((state) => state.removeEntityComponent);
   const setEntityEnabled = useEditorStore((state) => state.setEntityEnabled);
@@ -48,6 +49,25 @@ export default function Inspector() {
     vector[axis] = numberValue;
     updateEntityTransform(entity.id, { ...entity.transform, [property]: vector });
   };
+
+  /**
+   * Objects this one can be attached to: everything except itself and its own
+   * descendants, because a cycle would make the transform unresolvable.
+   */
+  const parentOptions = entity
+    ? Object.values(project.entities).filter((candidate) => {
+        if (candidate.id === entity.id) return false;
+        let cursor: string | null = candidate.parentId ?? null;
+        const seen = new Set<string>([candidate.id]);
+        while (cursor) {
+          if (cursor === entity.id) return false;
+          if (seen.has(cursor)) break;
+          seen.add(cursor);
+          cursor = project.entities[cursor]?.parentId ?? null;
+        }
+        return true;
+      })
+    : [];
 
   return (
     <div className="flex h-full w-80 shrink-0 flex-col border-l border-zinc-800 bg-zinc-900 text-zinc-300">
@@ -81,6 +101,27 @@ export default function Inspector() {
                 onChange={(event) => updateEntityName(entity.id, event.target.value)}
                 className={cn(inputClass, 'text-sm')}
               />
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-[11px] text-zinc-500">Attached to</label>
+              <select
+                value={entity.parentId ?? ''}
+                onChange={(event) => setParent(entity.id, event.target.value || null)}
+                className={inputClass}
+              >
+                <option value="">Nothing (a root object)</option>
+                {parentOptions.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] leading-4 text-zinc-600">
+                {entity.parentId
+                  ? 'Moves with its parent and inherits its scale, so offsets are in the parent\'s local units.'
+                  : 'Root objects sit in the world; attach one to another to move them together.'}
+              </p>
             </div>
 
             <section className="space-y-3">

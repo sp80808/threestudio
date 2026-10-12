@@ -364,6 +364,8 @@ function createPilot(recorder: Recorder, input: ScriptedInput, playerId = 'playe
 
 const DOOR_UPRIGHT = 1.5;
 const DOOR_OPEN = 4.5;
+/** The door sign hangs 1.35 m above the door in world space (see the template). */
+const SIGN_OFFSET_Y = 1.35;
 const PLATE: [number, number] = [1.6, 4.6];
 const GEMS: [number, number][] = [
   [0, -3],
@@ -407,6 +409,15 @@ const PRESSURE_PLATE_DOOR_PLAYTEST: Playtest = {
       `door y = ${door().position[1].toFixed(2)}m`,
     );
 
+    // Objects attached to the door are drawn (and collided with) at the parent
+    // transform, so the sign rises with the door.
+    const signHeight = harness.world.getWorldPosition('door-sign')[1];
+    recorder.check(
+      'the sign attached to the door rises with it',
+      signHeight > DOOR_UPRIGHT + SIGN_OFFSET_Y + 1,
+      `sign world y = ${signHeight.toFixed(2)}m`,
+    );
+
     recorder.note('pilot walks through the doorway');
     const through = pilot.walkTo([0, -0.5]);
     recorder.run(0.3);
@@ -437,13 +448,19 @@ const PRESSURE_PLATE_DOOR_PLAYTEST: Playtest = {
       `portal visible = ${harness.entity('portal').visible}`,
     );
 
-    recorder.note('pilot waits for the door to close itself');
+    recorder.note('pilot walks back off the plate, then waits for the door to close');
+    pilot.walkTo([1.6, 6.4]);
     pilot.still();
     recorder.run(6);
     recorder.check(
       'the door closed again',
       Math.abs(door().position[1] - DOOR_UPRIGHT) < 0.2,
       `door y = ${door().position[1].toFixed(2)}m`,
+    );
+    recorder.check(
+      'the attached sign came back down with it',
+      Math.abs(harness.world.getWorldPosition('door-sign')[1] - (DOOR_UPRIGHT + SIGN_OFFSET_Y)) < 0.2,
+      `sign world y = ${harness.world.getWorldPosition('door-sign')[1].toFixed(2)}m`,
     );
     recorder.check(
       'the closed door blocks movement again',

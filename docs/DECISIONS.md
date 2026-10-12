@@ -87,3 +87,22 @@ dependency — the recording is a few kilobytes of JSON that a reviewer can read
 **Trade-off**: a recording only reproduces against the document, seed and step rate it was
 captured with. The runner therefore checks the recording's `projectId` against the document it
 is playing and fails loudly on a mismatch rather than reporting a misleading result.
+
+## 13. Hierarchy Is Real: `world = parent * local`
+**Decision**: compose parent/child transforms in the runtime (`src/runtime/math.ts`,
+`world.ts`) and mirror the same nesting in the renderer, rather than treating `parentId` as
+an editor-only grouping.
+**Reasoning**: once objects can be attached to other objects, three things must agree or the
+editor lies to the author: what is drawn, what is collided with, and what behaviours read.
+Composing in one place (`world = parent * local`) and exposing `getWorldPosition` /
+`getWorldMatrix` / `getWorldAabb` keeps that agreement checkable — `hierarchy.test.ts` compares
+the runtime's composition with Three.js to ~1e-15 and asserts that a trigger on a moving parent
+reports overlaps where the player sees it.
+**Consequences**:
+- Children inherit the parent's scale, exactly like Three.js and every other 3D tool, so a
+  child authored in local units is scaled by its parent (the tutorial's door sign documents it).
+- Collision gains one indirection — a `CollisionContext` that answers "where is this object's
+  parent?" — so `collision.ts` stays a pure module and no other rule about solids changes.
+- Broken documents (a parent cycle, a parent that was deleted) become a single `hierarchy`
+  diagnostic and the object keeps its own transform: a mistake in the hierarchy is visible,
+  not fatal, and can never hang a frame.

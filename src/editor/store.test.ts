@@ -145,3 +145,35 @@ describe('Editor Store', () => {
     expect(Object.keys(store().project.entities)).toHaveLength(0);
   });
 });
+
+describe('parenting', () => {
+  it('attaches an object to another and detaches it again', () => {
+    const store = useEditorStore.getState();
+    store.loadTemplate('pressure-plate-door');
+
+    expect(useEditorStore.getState().setParent('gem-1', 'door-main')).toBe(true);
+    expect(useEditorStore.getState().project.entities['gem-1'].parentId).toBe('door-main');
+
+    expect(useEditorStore.getState().setParent('gem-1', null)).toBe(true);
+    expect(useEditorStore.getState().project.entities['gem-1'].parentId).toBeNull();
+  });
+
+  it('refuses to create a cycle or attach to itself', () => {
+    useEditorStore.getState().loadTemplate('pressure-plate-door');
+
+    // door-sign is already attached to door-main.
+    expect(useEditorStore.getState().setParent('door-main', 'door-sign')).toBe(false);
+    expect(useEditorStore.getState().setParent('door-main', 'door-main')).toBe(false);
+    expect(useEditorStore.getState().setParent('door-main', 'nope')).toBe(false);
+    expect(useEditorStore.getState().project.entities['door-main'].parentId).toBeNull();
+  });
+
+  it('makes attaching an object undoable', () => {
+    useEditorStore.getState().loadTemplate('pressure-plate-door');
+    useEditorStore.getState().setParent('gem-1', 'door-main');
+
+    useEditorStore.getState().undo();
+
+    expect(useEditorStore.getState().project.entities['gem-1'].parentId).toBeNull();
+  });
+});

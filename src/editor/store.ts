@@ -64,6 +64,13 @@ interface EditorState {
   updateEntityComponent: (id: string, component: EntityComponent) => void;
   removeEntityComponent: (id: string, type: EntityComponent['type']) => void;
   setEntityEnabled: (id: string, enabled: boolean) => void;
+  /**
+   * Attaches an object to another one (or detaches it with `null`).
+   *
+   * Returns false when the move would create a cycle — an object cannot be its
+   * own ancestor — so callers can tell the user why nothing happened.
+   */
+  setParent: (id: string, parentId: string | null) => boolean;
 
   addBehaviour: (entityId: string, behaviour: Behaviour) => void;
   updateBehaviour: (entityId: string, behaviourId: string, patch: Partial<Behaviour>) => void;
@@ -253,6 +260,26 @@ export const useEditorStore = create<EditorState>((set, get) => {
       }),
 
     setEntityEnabled: (id, enabled) => commit((project) => patchEntity(project, id, { enabled })),
+
+    setParent: (id, parentId) => {
+      const project = get().project;
+      const entity = project.entities[id];
+      if (!entity) return false;
+      if (parentId === id) return false;
+      if (parentId && !project.entities[parentId]) return false;
+
+      // Walking up from the new parent must never reach the object itself.
+      let cursor = parentId;
+      const seen = new Set<string>();
+      while (cursor) {
+        if (cursor === id || seen.has(cursor)) return false;
+        seen.add(cursor);
+        cursor = project.entities[cursor]?.parentId ?? null;
+      }
+
+      commit((current) => patchEntity(current, id, { parentId }));
+      return true;
+    },
 
     addBehaviour: (entityId, behaviour) =>
       commit((project) => {

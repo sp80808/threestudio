@@ -74,6 +74,14 @@ function click(element: Element | null) {
   });
 }
 
+/** The clickable row in the hierarchy panel for an object name. */
+function rowFor(name: string) {
+  return [...container.querySelectorAll('div')].find(
+    (element) =>
+      element.className.includes('cursor-pointer') && (element.textContent ?? '').includes(name),
+  );
+}
+
 /** Text inputs hold their value in the DOM property, not in `textContent`. */
 const inputValues = () =>
   [...container.querySelectorAll('input')].map((input) => (input as HTMLInputElement).value);
@@ -190,6 +198,22 @@ describe('editor panels', () => {
     // The registry-driven panel shows the unknown behaviour but offers no fields.
     expect(text()).toContain('quantum-teleport');
     expect(text()).toContain('Spin');
+  });
+
+  it('shows a parented object in the hierarchy and lets it be re-attached', () => {
+    loadProject(createPressurePlateDoorScene(), 'plate-main');
+    mount(panels);
+
+    // The door sign is attached to the door, so the panel shows the attachment.
+    expect(text()).toContain('Door sign');
+    const attached = [...container.querySelectorAll('select')].find((select) =>
+      [...select.options].some((option) => option.value === 'door-main'),
+    ) as HTMLSelectElement | undefined;
+    expect(attached?.value).toBe(''); // the plate is a root object
+
+    click(rowFor('Door sign') ?? null);
+    const select = container.querySelector('select') as HTMLSelectElement;
+    expect(select.value).toBe('door-main');
   });
 
   it('offers record and download controls in play mode', () => {

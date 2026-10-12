@@ -8,7 +8,7 @@
  */
 
 import * as THREE from 'three';
-import type { ColliderComponent, RenderComponent } from '../simulation/schema';
+import type { ColliderComponent, Project, RenderComponent } from '../simulation/schema';
 
 /** The visual half of an entity: its mesh plus the collider/selection helpers. */
 export interface EntityView {
@@ -89,6 +89,49 @@ export function createEntityView(): EntityView {
     color: null,
     opacity: null,
   };
+}
+
+/**
+ * Restores the scene graph to match `parentId` links.
+ *
+ * Object groups are nested like the document says, so Three.js composes parent
+ * transforms for both viewports and the glTF export — the runtime composes the
+ * same way for collision (`src/runtime/hierarchy.test.ts` pins that down).
+ * Groups are only re-parented when they are in the wrong place, so this is cheap
+ * enough to run on every document change.
+ */
+export function applyHierarchy(
+  project: Project,
+  views: Map<string, EntityView>,
+  root: THREE.Object3D,
+): void {
+  /**
+   * True when attaching `id` under `parentId` would put an object inside itself
+   * (imported documents can contain a cycle; the runtime reports it and uses the
+   * transform as-is, and Three.js must not be handed a cycle at all).
+   */
+  const wouldCycle = (id: string, parentId: string): boolean => {
+    let cursor: string | null = parentId;
+    const seen = new Set<string>([id]);
+    while (cursor) {
+      if (cursor === id) return true;
+      if (seen.has(cursor)) return true;
+      seen.add(cursor);
+      cursor = project.entities[cursor]?.parentId ?? null;
+    }
+    return false;
+  };
+
+  for (const [id, view] of views) {
+    if (!project.entities[id]) continue;
+    const parentId = project.entities[id].parentId;
+    const parentView = parentId ? views.get(parentId) : undefined;
+    const desired: THREE.Object3D =
+      parentView && parentView.group !== view.group && !wouldCycle(id, parentId as string)
+        ? parentView.group
+        : root;
+    if (view.group.parent !== desired) desired.add(view.group);
+  }
 }
 
 /** Applies the render component, rebuilding geometry/materials only on change. */

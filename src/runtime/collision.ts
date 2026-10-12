@@ -14,7 +14,14 @@
  */
 
 import type { Vec3 } from '../simulation/schema';
-import { clamp, cloneVec3, scaleVec3 } from './math';
+import {
+  applyAffine,
+  clamp,
+  cloneVec3,
+  scaleVec3,
+  transformAabb,
+  type AffineTransform,
+} from './math';
 import type { MoveResult, RuntimeEntity } from './types';
 
 export interface Aabb {
@@ -24,6 +31,19 @@ export interface Aabb {
 
 /** Longest distance an entity may travel in a single collision sub-step. */
 export const DEFAULT_MAX_SUBSTEP = 0.25;
+
+/**
+ * Supplies the parent transform of an entity, so collision happens in world
+ * space.
+ *
+ * The entity's *own* transform is applied by `entityAabb`/`entityAabbAt`
+ * themselves (from its local position and scale), so the context only has to
+ * answer "where is this object's parent?" — the identity for a root object,
+ * which is exactly what a flat scene needs.
+ */
+export interface CollisionContext {
+  parentOf(entity: RuntimeEntity): AffineTransform;
+}
 
 const EPSILON = 1e-6;
 
@@ -41,19 +61,31 @@ function colliderCentre(entity: RuntimeEntity, position: Vec3): Vec3 {
   return [position[0] + offset[0], position[1] + offset[1], position[2] + offset[2]];
 }
 
-/** Axis-aligned volume of an entity placed at `position`. */
-export function entityAabbAt(entity: RuntimeEntity, position: Vec3): Aabb | null {
+/**
+ * Axis-aligned volume of an entity placed at a local `position`.
+ *
+ * `parent` is the entity's parent-space transform (identity for a root object),
+ * so an object attached to a parent is tested where the player actually sees it.
+ */
+export function entityAabbAt(
+  entity: RuntimeEntity,
+  position: Vec3,
+  parent?: AffineTransform | null,
+): Aabb | null {
   if (!entity.collider) return null;
   const size = scaledSize(entity);
   const centre = colliderCentre(entity, position);
-  return {
+  const local: Aabb = {
     min: [centre[0] - size[0] / 2, centre[1] - size[1] / 2, centre[2] - size[2] / 2],
     max: [centre[0] + size[0] / 2, centre[1] + size[1] / 2, centre[2] + size[2] / 2],
   };
+  // The box is moved (and scaled/rotated) into world space; the entity's own
+  // scale is already part of `scaledSize`.
+  return parent ? transformAabb(parent, local.min, local.max) : local;
 }
 
-export function entityAabb(entity: RuntimeEntity): Aabb | null {
-  return entityAabbAt(entity, entity.position);
+export function entityAabb(entity: RuntimeEntity, parent?: AffineTransform | null): Aabb | null {
+  return entityAabbAt(entity, entity.position, parent);
 }
 
 export function aabbIntersects(a: Aabb, b: Aabb): boolean {
@@ -87,12 +119,18 @@ function sphereRadius(entity: RuntimeEntity): number {
  * Overlap test between two entities. Sphere/sphere pairs are tested exactly so
  * round colliders feel round; everything else falls back to box tests.
  */
-export function collidersOverlap(a: RuntimeEntity, b: RuntimeEntity): boolean {
+export function collidersOverlap(
+  a: RuntimeEntity,
+  b: RuntimeEntity,
+  context?: CollisionContext | null,
+): boolean {
   if (!a.collider || !b.collider) return false;
 
   if (a.collider.shape === 'sphere' && b.collider.shape === 'sphere') {
-    const centreA = colliderCentre(a, a.position);
-    const centreB = colliderCentre(b, b.position);
+    const localA = colliderCentre(a, a.position);
+    const localB = colliderCentre(b, b.position);
+    const centreA = context ? applyAffine(context.parentOf(a), localA) : localA;
+    const centreB = context ? applyAffine(context.parentOf(b), localB) : localB;
     const distance = Math.hypot(
       centreA[0] - centreB[0],
       centreA[1] - centreB[1],
@@ -101,8 +139,10 @@ export function collidersOverlap(a: RuntimeEntity, b: RuntimeEntity): boolean {
     return distance < sphereRadius(a) + sphereRadius(b) - EPSILON;
   }
 
-  const boxA = entityAabb(a);
-  const boxB = entityAabb(b);
+  // A sphere collider is treated as a box when paired with one, but its world
+  // position still comes from the hierarchy.
+  const boxA = entityAabb(a, context ? context.parentOf(a) : null);
+  const boxB = entityAabb(b, context ? context.parentOf(b) : null);
   if (!boxA || !boxB) return false;
   return aabbIntersects(boxA, boxB);
 }
@@ -121,27 +161,32 @@ export function isTriggerVolume(entity: RuntimeEntity): boolean {
 }
 
 /**
- * Moves an entity by `delta`, stopping at solid volumes.
+ * Moves an entity by `delta` (in its parent's space), stopping at solid volumes.
  *
  * Already-overlapping volumes are ignored so an object authored inside another
- * one can still escape instead of becoming permanently stuck.
+ * one can still escape instead of becoming permanently stuck. Passing a
+ * `context` resolves the movement in world space, so attached objects collide
+ * where they are drawn.
  */
 export function resolveMovement(
   entity: RuntimeEntity,
   delta: Vec3,
   blockers: RuntimeEntity[],
-  maxSubstep: number = DEFAULT_MAX_SUBSTEP,
+  options: { maxSubstep?: number; context?: CollisionContext | null } = {},
 ): MoveResult {
+  const maxSubstep = options.maxSubstep ?? DEFAULT_MAX_SUBSTEP;
+  const context = options.context ?? null;
   const blocked = { x: false, y: false, z: false };
   let position = cloneVec3(entity.position);
   const distance = Math.hypot(delta[0], delta[1], delta[2]);
   if (distance < EPSILON) return { position, blocked };
 
-  const initialBox = entityAabbAt(entity, position);
+  const parent = context ? context.parentOf(entity) : null;
+  const initialBox = entityAabbAt(entity, position, parent);
   const ignored = new Set<string>();
   if (initialBox) {
     for (const blocker of blockers) {
-      const box = entityAabb(blocker);
+      const box = entityAabb(blocker, context ? context.parentOf(blocker) : null);
       if (box && aabbIntersects(initialBox, box)) ignored.add(blocker.id);
     }
   }
@@ -162,7 +207,7 @@ export function resolveMovement(
       const candidate = cloneVec3(position);
       candidate[index] += amount;
 
-      if (isBlockedAt(entity, candidate, activeBlockers)) {
+      if (isBlockedAt(entity, candidate, activeBlockers, context)) {
         blocked[axis] = true;
         continue;
       }
@@ -173,11 +218,16 @@ export function resolveMovement(
   return { position, blocked };
 }
 
-function isBlockedAt(entity: RuntimeEntity, position: Vec3, blockers: RuntimeEntity[]): boolean {
-  const box = entityAabbAt(entity, position);
+function isBlockedAt(
+  entity: RuntimeEntity,
+  position: Vec3,
+  blockers: RuntimeEntity[],
+  context: CollisionContext | null,
+): boolean {
+  const box = entityAabbAt(entity, position, context ? context.parentOf(entity) : null);
   if (!box) return false;
   for (const blocker of blockers) {
-    const other = entityAabb(blocker);
+    const other = entityAabb(blocker, context ? context.parentOf(blocker) : null);
     if (other && aabbIntersects(box, other)) return true;
   }
   return false;
