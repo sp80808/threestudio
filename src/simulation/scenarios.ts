@@ -1,0 +1,567 @@
+/**
+ * @license SPDX-License-Identifier: Apache-2.0
+ *
+ * Ready-made scenes.
+ *
+ * Templates are plain project documents, so they double as executable
+ * documentation: every one of them is covered by the runtime test suite
+ * (see `src/runtime/scenario.test.ts`).
+ */
+
+import {
+  createEntity,
+  createRule,
+  createRuleAction,
+  createRuleCondition,
+  createVariable,
+  type Project,
+} from './schema';
+import { createBehaviourInstance } from '../runtime/behaviours';
+
+export interface SceneTemplate {
+  id: string;
+  name: string;
+  description: string;
+  create: () => Project;
+}
+
+function projectBase(id: string, name: string): Project {
+  return {
+    id,
+    version: 2,
+    name,
+    entities: {},
+    variables: {},
+    rules: [],
+    settings: { stepRate: 60, gravity: -9.81, cameraFollow: true, maxStepsPerFrame: 5 },
+  };
+}
+
+/**
+ * Tutorial scene and the project's acceptance scenario: walk onto the pressure
+ * plate, the door slides open, collect three gems to reveal the portal.
+ *
+ * It exercises every layer of the runtime on purpose — behaviours (character,
+ * door, pressure-plate, collectible, spin, bob), triggers, messages, rules,
+ * variables and conditions.
+ */
+export function createPressurePlateDoorScene(): Project {
+  const project = projectBase('scene-pressure-plate-door', 'Pressure Plate Door');
+
+  project.variables = {
+    gems: createVariable('gems', 'Gems', 'number', 0),
+    allGems: createVariable('allGems', 'All gems found', 'boolean', false),
+  };
+
+  const ground = createEntity({
+    id: 'ground',
+    name: 'Ground',
+    geometry: 'plane',
+    color: '#2f3640',
+    position: [0, -0.2, 0],
+    scale: [26, 1, 26],
+    collider: { size: [1, 0.4, 1] },
+    tags: ['ground'],
+  });
+
+  const player = createEntity({
+    id: 'player',
+    name: 'Player',
+    geometry: 'capsule',
+    color: '#4c9aff',
+    position: [0, 0.85, 8],
+    collider: { size: [0.9, 1.7, 0.9] },
+    tags: ['player'],
+    behaviours: [
+      createBehaviourInstance('character', {
+        speed: 6,
+        jumpSpeed: 5.2,
+        turnToFaceMotion: true,
+        relativeToCamera: true,
+        useGravity: true,
+      }),
+    ],
+  });
+
+  // Meshes are unit geometries scaled by the transform, and a collider's size is
+  // also scaled — so the two agree when the scale describes the object.
+  const wallLeft = createEntity({
+    id: 'wall-left',
+    name: 'Wall (left)',
+    geometry: 'box',
+    color: '#59606d',
+    position: [-4, 1.5, 0],
+    scale: [5, 3, 0.6],
+    collider: { size: [1, 1, 1] },
+  });
+
+  const wallRight = createEntity({
+    id: 'wall-right',
+    name: 'Wall (right)',
+    geometry: 'box',
+    color: '#59606d',
+    position: [4, 1.5, 0],
+    scale: [5, 3, 0.6],
+    collider: { size: [1, 1, 1] },
+  });
+
+  const door = createEntity({
+    id: 'door-main',
+    name: 'Door',
+    geometry: 'box',
+    color: '#c98a2e',
+    position: [0, 1.5, 0],
+    scale: [3, 3, 0.4],
+    collider: { size: [1, 1, 1] },
+    behaviours: [
+      createBehaviourInstance('door', {
+        axis: 'y',
+        distance: 3,
+        duration: 0.8,
+        autoClose: true,
+        closeDelay: 2.5,
+        openMessage: 'open',
+        closeMessage: 'close',
+      }),
+    ],
+  });
+
+  const plate = createEntity({
+    id: 'plate-main',
+    name: 'Pressure plate',
+    geometry: 'box',
+    color: '#3f9e6a',
+    position: [1.6, 0.12, 4.6],
+    scale: [2, 0.24, 2],
+    // The trigger volume is lifted above the floor: an overlap with the ground
+    // would otherwise count as "something is standing on the plate".
+    collider: { size: [1, 1, 1], isTrigger: true, offset: [0, 0.3, 0] },
+    behaviours: [
+      createBehaviourInstance('pressure-plate', {
+        targetEntityId: '',
+        message: 'open',
+        releaseMessage: 'close',
+        releaseDelay: 0.2,
+        sinkDepth: 0.12,
+      }),
+    ],
+    rules: [
+      createRule({
+        id: 'plate-open-door',
+        name: 'Plate pressed → open the door',
+        event: { type: 'custom', sourceEntityId: null, name: 'open', interval: null },
+        actions: [createRuleAction('emit-event', { targetEntityId: 'door-main', property: 'open', value: true })],
+      }),
+      createRule({
+        id: 'plate-release-door',
+        name: 'Plate released → close the door',
+        event: { type: 'custom', sourceEntityId: null, name: 'close', interval: null },
+        actions: [createRuleAction('emit-event', { targetEntityId: 'door-main', property: 'close', value: false })],
+      }),
+      createRule({
+        id: 'plate-click-open',
+        name: 'Click the plate → open the door too',
+        event: { type: 'pointer-click', sourceEntityId: null, name: null, interval: null },
+        actions: [createRuleAction('emit-event', { targetEntityId: 'door-main', property: 'open', value: true })],
+      }),
+    ],
+  });
+
+  const gemPositions: [number, number, number][] = [
+    [0, 0.6, -3],
+    [1.6, 0.6, -4.8],
+    [-1.6, 0.6, -4.8],
+  ];
+
+  const gems = gemPositions.map((position, index) =>
+    createEntity({
+      id: `gem-${index + 1}`,
+      name: `Gem ${index + 1}`,
+      geometry: 'sphere',
+      color: '#e8c547',
+      position,
+      scale: [0.9, 0.9, 0.9],
+      collider: { size: [1, 1, 1], isTrigger: true },
+      behaviours: [
+        createBehaviourInstance('collectible', {
+          variableId: 'gems',
+          amount: 1,
+          onlyPlayer: true,
+          hideWhenCollected: true,
+          message: 'collected',
+        }),
+        createBehaviourInstance('spin', { axis: 'y', speed: 90 }),
+      ],
+    }),
+  );
+
+  // Attached to the door, so it slides up with it — the tutorial's example of a
+  // hierarchy. A child inherits its parent's scale, so it is authored in the
+  // door's local units: an offset of 0.45 on Y is 1.35 m of world space for a
+  // door that is 3×3×0.4, and the sign's own scale is divided by the door's.
+  const sign = createEntity({
+    id: 'door-sign',
+    name: 'Door sign',
+    geometry: 'box',
+    color: '#e8e8e8',
+    // world position (0, 2.85, 0.32) and world size 1.6 × 0.5 × 0.1
+    position: [0, 0.45, 0.8],
+    scale: [0.53, 0.17, 0.25],
+    parentId: 'door-main',
+  });
+
+  const portal = createEntity({
+    id: 'portal',
+    name: 'Portal',
+    geometry: 'sphere',
+    color: '#7c5cff',
+    position: [0, 1.6, -7],
+    visible: false,
+    behaviours: [createBehaviourInstance('spin', { axis: 'y', speed: 60 })],
+  });
+
+  const drone = createEntity({
+    id: 'drone',
+    name: 'Hovering drone',
+    geometry: 'box',
+    color: '#d16ba5',
+    position: [-4, 2.2, 4.5],
+    scale: [0.7, 0.7, 0.7],
+    behaviours: [
+      createBehaviourInstance('spin', { axis: 'y', speed: 60 }),
+      createBehaviourInstance('bob', { axis: 'y', amplitude: 0.4, frequency: 0.4 }),
+    ],
+  });
+
+  for (const entity of [
+    ground,
+    player,
+    wallLeft,
+    wallRight,
+    door,
+    sign,
+    plate,
+    portal,
+    drone,
+    ...gems,
+  ]) {
+    project.entities[entity.id] = entity;
+  }
+
+  // Scene-wide rules: they belong to the scene rather than to one object, which
+  // is what makes "reveal the portal when all gems are collected" natural.
+  project.rules = [
+    createRule({
+      id: 'scene-reveal-portal',
+      name: 'All gems collected → reveal the portal',
+      event: { type: 'variable-changed', sourceEntityId: null, name: 'Gems', interval: null },
+      conditions: [
+        createRuleCondition('variable-greater-than', { property: 'gems', value: 2 }),
+      ],
+      actions: [
+        createRuleAction('set-variable', { property: 'allGems', value: true }),
+        createRuleAction('set-visible', {
+          targetEntityId: 'portal',
+          value: true,
+        }),
+        createRuleAction('emit-event', {
+          targetEntityId: 'player',
+          property: 'all-gems-found',
+          value: true,
+        }),
+      ],
+    }),
+    createRule({
+      id: 'scene-reset-door',
+      name: 'On start → make sure the door is shut',
+      event: { type: 'scene-start', sourceEntityId: null, name: null, interval: null },
+      actions: [createRuleAction('emit-event', { targetEntityId: 'door-main', property: 'close' })],
+    }),
+    createRule({
+      id: 'scene-gem-hint',
+      name: 'Every 10s → nudge the player toward the gems',
+      event: { type: 'interval', sourceEntityId: null, name: null, interval: 10 },
+      conditions: [createRuleCondition('variable-greater-than', { property: 'gems', value: 0 })],
+      actions: [
+        createRuleAction('emit-event', { targetEntityId: 'player', property: 'hint', value: 'Keep going!' }),
+      ],
+    }),
+  ];
+
+  return project;
+}
+
+/**
+ * Sandbox scene for experimenting with pointer interaction, chasing enemies and
+ * variables. Useful for manual play-testing of new behaviours.
+ */
+export function createPlaygroundScene(): Project {
+  const project = projectBase('scene-playground', 'Playground');
+
+  project.variables = {
+    clicks: createVariable('clicks', 'Clicks', 'number', 0),
+    lastClicked: createVariable('lastClicked', 'Last clicked', 'string', ''),
+  };
+
+  const ground = createEntity({
+    id: 'ground',
+    name: 'Ground',
+    geometry: 'plane',
+    color: '#262b33',
+    position: [0, -0.2, 0],
+    scale: [24, 1, 24],
+    collider: { size: [1, 0.4, 1] },
+    tags: ['ground'],
+  });
+
+  const player = createEntity({
+    id: 'player',
+    name: 'Player',
+    geometry: 'capsule',
+    color: '#4c9aff',
+    position: [0, 0.85, 6],
+    collider: { size: [0.9, 1.7, 0.9] },
+    tags: ['player'],
+    behaviours: [
+      createBehaviourInstance('character', { speed: 5, jumpSpeed: 5.4, turnToFaceMotion: true }),
+    ],
+  });
+
+  const clickable = createEntity({
+    id: 'clickable',
+    name: 'Click me',
+    geometry: 'box',
+    color: '#e2703a',
+    position: [-3.5, 0.6, 2],
+    scale: [1.6, 1.2, 1.6],
+    collider: { size: [1, 1, 1] },
+    behaviours: [createBehaviourInstance('bob', { axis: 'y', amplitude: 0.15, frequency: 0.6 })],
+    rules: [
+      createRule({
+        id: 'click-count',
+        name: 'Clicked → count it',
+        event: { type: 'pointer-click', sourceEntityId: null, name: null, interval: null },
+        actions: [
+          createRuleAction('change-variable', { property: 'clicks', value: 1 }),
+          createRuleAction('set-variable', { property: 'lastClicked', value: 'Click me' }),
+        ],
+      }),
+    ],
+  });
+
+  const lamp = createEntity({
+    id: 'lamp',
+    name: 'Lamp',
+    geometry: 'sphere',
+    color: '#f6e05e',
+    position: [-3.5, 2.6, 2],
+    scale: [0.8, 0.8, 0.8],
+    visible: false,
+    behaviours: [createBehaviourInstance('spin', { axis: 'y', speed: 120 })],
+  });
+
+  const pedestal = createEntity({
+    id: 'pedestal',
+    name: 'Pedestal',
+    geometry: 'cylinder',
+    color: '#4a5568',
+    position: [3, 0.5, 0],
+    scale: [1.2, 1, 1.2],
+    collider: { size: [1, 1, 1] },
+  });
+
+  const orbiter = createEntity({
+    id: 'orbiter',
+    name: 'Orbiter',
+    geometry: 'sphere',
+    color: '#63b3ed',
+    position: [5, 1.6, 0],
+    scale: [0.6, 0.6, 0.6],
+    behaviours: [
+      createBehaviourInstance('orbit', {
+        targetEntityId: 'pedestal',
+        radius: 2,
+        speed: 90,
+        height: 1.1,
+      }),
+    ],
+  });
+
+  const chaser = createEntity({
+    id: 'chaser',
+    name: 'Chaser',
+    geometry: 'cone',
+    color: '#f56565',
+    position: [0, 0.8, -6],
+    scale: [1, 1.6, 1],
+    collider: { size: [1, 1, 1] },
+    behaviours: [
+      createBehaviourInstance('follow', {
+        targetEntityId: 'player',
+        speed: 2.4,
+        stopDistance: 2,
+        faceTarget: true,
+      }),
+    ],
+  });
+
+  const patroller = createEntity({
+    id: 'patroller',
+    name: 'Patroller',
+    geometry: 'box',
+    color: '#9f7aea',
+    position: [-5, 0.5, -3],
+    scale: [0.8, 0.8, 0.8],
+    behaviours: [createBehaviourInstance('patrol', { axis: 'z', distance: 6, speed: 2 })],
+  });
+
+  for (const entity of [ground, player, clickable, lamp, pedestal, orbiter, chaser, patroller]) {
+    project.entities[entity.id] = entity;
+  }
+
+  project.rules = [
+    createRule({
+      id: 'playground-lamp',
+      name: 'Three clicks → switch the lamp on',
+      event: { type: 'variable-changed', sourceEntityId: null, name: 'Clicks', interval: null },
+      conditions: [createRuleCondition('variable-greater-than', { property: 'clicks', value: 2 })],
+      actions: [createRuleAction('set-visible', { targetEntityId: 'lamp', value: true })],
+    }),
+    createRule({
+      id: 'playground-catch',
+      name: 'Chaser reaches the player → reset the chaser',
+      event: { type: 'interval', sourceEntityId: null, name: null, interval: 0.25 },
+      conditions: [
+        // Conditions can look at any object, which is how "the chaser caught the
+        // player" is expressed without adding a bespoke behaviour.
+        createRuleCondition('distance-less-than', {
+          subjectEntityId: 'chaser',
+          property: 'player',
+          value: 2.2,
+        }),
+        createRuleCondition('entity-enabled', { subjectEntityId: 'chaser', value: true }),
+      ],
+      actions: [
+        createRuleAction('reset-entity', { targetEntityId: 'chaser' }),
+        createRuleAction('emit-event', { targetEntityId: 'player', property: 'caught', value: true }),
+      ],
+    }),
+    createRule({
+      id: 'playground-hud',
+      name: 'On start → greet',
+      event: { type: 'scene-start', sourceEntityId: null, name: null, interval: null },
+      actions: [createRuleAction('set-variable', { property: 'lastClicked', value: 'Ready!' })],
+    }),
+  ];
+
+  return project;
+}
+
+/** Blocks the crowd scene aims for; enough to dwarf the broad phase's pair limit. */
+export const CROWD_OBJECT_COUNT = 300;
+/** Grid spacing of the crowd blocks, in metres. Crates are 1.4 wide, so lanes are ~1.6. */
+export const CROWD_GRID_STEP = 3;
+/** How far out the crowd grid reaches, in grid cells. */
+export const CROWD_GRID_HALF = 12;
+
+/**
+ * The acceptance scene with a block city dropped around it: hundreds of crates
+ * and trigger pads on a grid, with lanes left clear along both axes so the
+ * player can still walk the tutorial.
+ *
+ * It exists to make the *cost* of a step visible: with this many colliders a
+ * naive all-pairs overlap test is 50,000-odd intersections per step, while the
+ * broad phase hands the narrow phase a few hundred (see
+ * `src/runtime/broadphase.ts`). The play HUD reports the pair count.
+ */
+export function createCrowdScene(count = CROWD_OBJECT_COUNT): Project {
+  const project = createPressurePlateDoorScene();
+  project.id = 'scene-crowd';
+  project.name = `Crowd (${count} objects)`;
+  project.variables = {
+    ...project.variables,
+    pads: createVariable('pads', 'Pads hit', 'number', 0),
+  };
+
+  let index = 0;
+  let placed = 0;
+  for (let x = -CROWD_GRID_HALF; x <= CROWD_GRID_HALF && placed < count; x += 1) {
+    for (let z = -CROWD_GRID_HALF; z <= CROWD_GRID_HALF && placed < count; z += 1) {
+      if (Math.abs(x) <= 1 || Math.abs(z) <= 1) continue; // the lanes
+      const isPad = index % 4 === 0;
+      const entity = createEntity({
+        id: `crowd-${index}`,
+        name: isPad ? `Pad ${index}` : `Crate ${index}`,
+        geometry: 'box',
+        color: isPad ? '#f6ad55' : '#4a5568',
+        position: [x * CROWD_GRID_STEP, isPad ? 0.1 : 0.5, z * CROWD_GRID_STEP],
+        scale: [1.4, isPad ? 0.2 : 1, 1.4],
+        collider: { size: [1, 1, 1], isTrigger: isPad },
+        // A few of them spin, so the scene is not purely static.
+        ...(index % 8 === 0
+          ? { behaviours: [createBehaviourInstance('spin', { axis: 'y', speed: 45 })] }
+          : {}),
+        tags: isPad ? ['pad'] : [],
+      });
+      project.entities[entity.id] = entity;
+      index += 1;
+      placed += 1;
+    }
+  }
+
+  // Triggers down both lanes, so walking the middle still proves the narrow
+  // phase finds the pairs the broad phase hands it.
+  for (let lane = -CROWD_GRID_HALF; lane <= CROWD_GRID_HALF; lane += 2) {
+    const entity = createEntity({
+      id: `lane-pad-${lane}`,
+      name: `Lane pad ${lane}`,
+      geometry: 'box',
+      color: '#f6ad55',
+      position: [0, 0.1, lane * CROWD_GRID_STEP],
+      scale: [2, 0.2, 2],
+      collider: { size: [1, 1, 1], isTrigger: true },
+      tags: ['pad'],
+    });
+    project.entities[entity.id] = entity;
+  }
+
+  // The pads count themselves, so a run has something to prove.
+  project.rules = [
+    ...(project.rules ?? []).filter((rule) => rule.id !== 'scene-gem-hint'),
+    createRule({
+      id: 'crowd-count-pads',
+      name: 'Something enters a pad → count it',
+      event: { type: 'trigger-enter', sourceEntityId: null, name: null, interval: null },
+      actions: [createRuleAction('change-variable', { property: 'pads', value: 1 })],
+    }),
+  ];
+
+  return project;
+}
+
+export const SCENE_TEMPLATES: SceneTemplate[] = [
+  {
+    id: 'pressure-plate-door',
+    name: 'Pressure Plate Door',
+    description: 'Tutorial scene: step on the plate to open a door, collect gems to reveal the portal.',
+    create: createPressurePlateDoorScene,
+  },
+  {
+    id: 'playground',
+    name: 'Playground',
+    description: 'Sandbox for pointer clicks, chasing enemies, orbiting props and variables.',
+    create: createPlaygroundScene,
+  },
+  {
+    id: 'crowd',
+    name: 'Object Crowd',
+    description:
+      '325 objects in the tutorial scene: a stress test for the broad phase, which the play HUD counts.',
+    create: createCrowdScene,
+  },
+];
+
+export function createSceneTemplate(id: string): Project {
+  const template = SCENE_TEMPLATES.find((candidate) => candidate.id === id);
+  return template ? template.create() : createPressurePlateDoorScene();
+}
